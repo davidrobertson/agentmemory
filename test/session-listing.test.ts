@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryKV } from "../src/mcp/in-memory-kv.js";
+import { resetHandleForTests, setLivezProbe } from "../src/mcp/rest-proxy.js";
 import { handleToolCall } from "../src/mcp/standalone.js";
 import { registerMcpEndpoints } from "../src/mcp/server.js";
 import { registerApiTriggers } from "../src/triggers/api.js";
@@ -66,6 +67,15 @@ function ids(value: unknown): string[] {
 }
 
 describe("session listings", () => {
+  beforeEach(() => {
+    resetHandleForTests();
+    setLivezProbe(vi.fn(async () => ({ ok: false })));
+  });
+
+  afterEach(() => {
+    resetHandleForTests();
+  });
+
   it("orders valid sessions newest first with an ID tie-break and skips malformed rows across all surfaces", async () => {
     const kv = {
       list: async () => rows,
