@@ -12,21 +12,25 @@ export function selectDurableMemories(
   memories: readonly Memory[],
   selection: DurableMemorySelection,
 ): Memory[] {
-  const terms = Array.from(
-    new Set(selection.query?.toLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? []),
-  );
+  const tokenize = (text: string): string[] =>
+    text.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+  const terms = Array.from(new Set(tokenize(selection.query ?? "")));
+  const minimumMatches = Math.max(1, Math.ceil(terms.length / 2));
   const now = selection.now ?? Date.now();
   const matchCount = (memory: Memory): number => {
     if (terms.length === 0) return 0;
-    const text = [
-      memory.title,
-      memory.content,
-      ...memory.concepts,
-      ...memory.files,
-    ]
-      .join(" ")
-      .toLowerCase();
-    return terms.reduce((count, term) => count + Number(text.includes(term)), 0);
+    const memoryTerms = new Set(
+      tokenize([
+        memory.title,
+        memory.content,
+        ...memory.concepts,
+        ...memory.files,
+      ].join(" ")),
+    );
+    return terms.reduce(
+      (count, term) => count + Number(memoryTerms.has(term)),
+      0,
+    );
   };
 
   return memories
@@ -42,7 +46,7 @@ export function selectDurableMemories(
         (selection.project === undefined ||
           memory.project === undefined ||
           memory.project === selection.project) &&
-        (terms.length === 0 || matches > 0)
+        (terms.length === 0 || matches >= minimumMatches)
       );
     })
     .sort((a, b) => {

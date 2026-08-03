@@ -262,4 +262,40 @@ describe("durable memory recall", () => {
 
     expect(result.results.map((item) => item.obsId)).toEqual([observation.id]);
   });
+
+  it("does not let weak substring durable matches crowd out a precise hybrid hit", async () => {
+    const memory = makeMemory({
+      id: "mem_weak_ip_match",
+      content: "shipping server 4 release notes",
+      strength: 10,
+    });
+    await kv.set(KV.memories, memory.id, memory);
+    const observation: CompressedObservation = {
+      id: "obs_unraid_ip",
+      sessionId: "ses_unraid",
+      timestamp: "2026-08-01T00:00:00Z",
+      type: "decision",
+      title: "Unraid server IP is 192.168.86.4",
+      facts: ["The Unraid server IP address is 192.168.86.4."],
+      narrative: "Recovered the exact Unraid server address.",
+      concepts: ["Unraid", "192.168.86.4"],
+      files: [],
+      importance: 8,
+    };
+    registerSmartSearchFunction(sdk as never, kv as never, async () => [{
+      observation,
+      vectorScore: 0.9,
+      bm25Score: 1,
+      combinedScore: 0.9,
+      sessionId: observation.sessionId,
+    }]);
+
+    const result = (await sdk.trigger("mem::smart-search", {
+      query: "192.168.86.4 Unraid server IP",
+      limit: 1,
+      includeLessons: false,
+    })) as { results: Array<{ obsId: string }> };
+
+    expect(result.results.map((item) => item.obsId)).toEqual([observation.id]);
+  });
 });
