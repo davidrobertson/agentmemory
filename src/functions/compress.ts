@@ -22,6 +22,7 @@ import { scoreCompression } from "../eval/quality.js";
 import { compressWithRetry } from "../eval/self-correct.js";
 import type { MetricsStore } from "../eval/metrics-store.js";
 import { logger } from "../logger.js";
+import { buildSyntheticCompression } from "./compress-synthetic.js";
 
 const VALID_TYPES = new Set<string>([
   "file_read",
@@ -64,6 +65,7 @@ function parseCompressionXml(
   };
 }
 
+// allow: SIZE_OK — one linear compression pipeline owns exact-once persistence and indexing.
 export function registerCompressFunction(
   sdk: ISdk,
   kv: StateKV,
@@ -133,40 +135,47 @@ export function registerCompressFunction(
             : { valid: false, errors: result.result.errors };
         };
 
-        const { response, retried } = await compressWithRetry(
-          provider,
-          COMPRESSION_SYSTEM,
-          prompt,
-          validator,
-          1,
-        );
-
-        const parsed = parseCompressionXml(response);
-        if (!parsed) {
-          const latencyMs = Date.now() - startMs;
-          if (metricsStore) {
-            await metricsStore.record("mem::compress", latencyMs, false);
+        let compressed = buildSyntheticCompression(data.raw);
+        let qualityScore: number | undefined;
+        let failure: "compression_failed" | "parse_failed" | undefined;
+        let retried = false;
+        try {
+          const result = await compressWithRetry(
+            provider,
+            COMPRESSION_SYSTEM,
+            prompt,
+            validator,
+            1,
+          );
+          retried = result.retried;
+          const parsed = parseCompressionXml(result.response);
+          if (parsed) {
+            qualityScore = scoreCompression(parsed);
+            compressed = {
+              id: data.observationId,
+              sessionId: data.sessionId,
+              timestamp: data.raw.timestamp,
+              ...parsed,
+              confidence: qualityScore / 100,
+              ...(hasImage ? { modality: data.raw.modality } : {}),
+              ...(imageDescription ? { imageDescription } : {}),
+              ...(data.raw.imageData ? { imageRef: data.raw.imageData } : {}),
+              ...(data.raw.agentId ? { agentId: data.raw.agentId } : {}),
+            };
+          } else {
+            failure = "parse_failed";
+            logger.warn("Failed to parse compression XML", {
+              obsId: data.observationId,
+              retried,
+            });
           }
-          logger.warn("Failed to parse compression XML", {
+        } catch (err) {
+          failure = "compression_failed";
+          logger.warn("Compression failed, synthetic fallback stored", {
             obsId: data.observationId,
-            retried,
+            error: err instanceof Error ? err.message : String(err),
           });
-          return { success: false, error: "parse_failed" };
         }
-
-        const qualityScore = scoreCompression(parsed);
-
-        const compressed: CompressedObservation = {
-          id: data.observationId,
-          sessionId: data.sessionId,
-          timestamp: data.raw.timestamp,
-          ...parsed,
-          confidence: qualityScore / 100,
-          ...(hasImage ? { modality: data.raw.modality } : {}),
-          ...(imageDescription ? { imageDescription } : {}),
-          ...(data.raw.imageData ? { imageRef: data.raw.imageData } : {}),
-          ...(data.raw.agentId ? { agentId: data.raw.agentId } : {}),
-        };
 
         await kv.set(
           KV.observations(data.sessionId),
@@ -189,7 +198,10 @@ export function registerCompressFunction(
           compressed.id,
           compressed.sessionId,
           compressed.title + " " + (compressed.narrative || ""),
-          { kind: "observation", logId: compressed.id },
+          {
+            kind: failure ? "synthetic" : "observation",
+            logId: compressed.id,
+          },
         );
 
         const streamResults = await Promise.allSettled([
@@ -236,10 +248,12 @@ export function registerCompressFunction(
           await metricsStore.record(
             "mem::compress",
             latencyMs,
-            true,
+            failure === undefined,
             qualityScore,
           );
         }
+
+        if (failure) return { success: false, error: failure };
 
         logger.info("Observation compressed", {
           obsId: data.observationId,
