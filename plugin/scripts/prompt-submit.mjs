@@ -46,21 +46,20 @@ async function main() {
 	if (!data || typeof data !== "object") return;
 	if (isSdkChildContext(data)) return;
 	const sessionId = data.session_id || data.sessionId || "unknown";
-	try {
-		await fetch(`${REST_URL}/agentmemory/observe`, {
-			method: "POST",
-			headers: authHeaders(),
-			body: JSON.stringify({
-				hookType: "prompt_submit",
-				sessionId,
-				project: resolveProject(data.cwd),
-				cwd: data.cwd || process.cwd(),
-				timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-				data: { prompt: data.prompt ?? data.userPrompt }
-			}),
-			signal: AbortSignal.timeout(3e3)
-		});
-	} catch {}
+	fetch(`${REST_URL}/agentmemory/observe`, {
+		method: "POST",
+		headers: authHeaders(),
+		body: JSON.stringify({
+			hookType: "prompt_submit",
+			sessionId,
+			project: resolveProject(data.cwd),
+			cwd: data.cwd || process.cwd(),
+			timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+			data: { prompt: data.prompt ?? data.userPrompt }
+		}),
+		signal: AbortSignal.timeout(3e3)
+	}).catch(() => {});
+	setTimeout(() => process.exit(0), 500).unref();
 }
 main().catch(() => process.exit(0));
 //#endregion

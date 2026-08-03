@@ -171,6 +171,6 @@ describe("Codex marketplace.json (.codex-plugin/marketplace.json at repo root)",
     expect(entry.source.source).toBe("git-subdir");
     expect(entry.source.path).toBe("./plugin");
     expect(entry.source.url).toBe("https://github.com/davidrobertson/agentmemory.git");
-    expect(entry.source.ref).toBe("v0.9.28-codex.1");
+    expect(entry.source.ref).toBe("v0.9.28-codex.2");
   });
 });

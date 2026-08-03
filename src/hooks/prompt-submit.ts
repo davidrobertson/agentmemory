@@ -34,21 +34,20 @@ async function main() {
 
   const sessionId = ((data.session_id || data.sessionId) as string) || "unknown";
 
-  try {
-    await fetch(`${REST_URL}/agentmemory/observe`, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({
-        hookType: "prompt_submit",
-        sessionId,
-        project: resolveProject(data.cwd as string | undefined),
-        cwd: (data.cwd as string | undefined) || process.cwd(),
-        timestamp: new Date().toISOString(),
-        data: { prompt: data.prompt ?? data.userPrompt },
-      }),
-      signal: AbortSignal.timeout(3000),
-    });
-  } catch {}
+  fetch(`${REST_URL}/agentmemory/observe`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({
+      hookType: "prompt_submit",
+      sessionId,
+      project: resolveProject(data.cwd as string | undefined),
+      cwd: (data.cwd as string | undefined) || process.cwd(),
+      timestamp: new Date().toISOString(),
+      data: { prompt: data.prompt ?? data.userPrompt },
+    }),
+    signal: AbortSignal.timeout(3000),
+  }).catch(() => {});
+  setTimeout(() => process.exit(0), 500).unref();
 }
 
 main().catch(() => process.exit(0));

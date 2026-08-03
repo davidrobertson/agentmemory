@@ -63,12 +63,11 @@ async function main() {
 		})
 	};
 	if (!INJECT_CONTEXT) {
-		try {
-			await fetch(url, {
-				...init,
-				signal: AbortSignal.timeout(REGISTER_TIMEOUT_MS)
-			});
-		} catch {}
+		fetch(url, {
+			...init,
+			signal: AbortSignal.timeout(REGISTER_TIMEOUT_MS)
+		}).catch(() => {});
+		setTimeout(() => process.exit(0), 500).unref();
 		return;
 	}
 	try {

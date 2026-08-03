@@ -31,9 +31,11 @@ describe("built capture hooks", () => {
     ["post-tool-use.mjs", { tool_name: "Read", tool_output: "done" }],
     ["post-tool-failure.mjs", { tool_name: "Read", error: "failed" }],
     ["session-start.mjs", {}],
-  ])("waits for the observe response before exiting: %s", async (script, payload) => {
+  ])("dispatches telemetry without waiting for the response: %s", async (script, payload) => {
+    const paths: string[] = [];
     const server = http.createServer((_request, response) => {
-      setTimeout(() => response.end("ok"), 700);
+      paths.push(_request.url ?? "");
+      setTimeout(() => response.end("ok"), 1200);
     });
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -47,14 +49,15 @@ describe("built capture hooks", () => {
         url: `http://127.0.0.1:${address.port}`,
       });
       expect(result.code).toBe(0);
-      expect(result.elapsed).toBeGreaterThanOrEqual(650);
+      expect(result.elapsed).toBeLessThan(1100);
+      expect(paths).toHaveLength(1);
     } finally {
       server.close();
       await once(server, "close");
     }
   });
 
-  it("fails open after the capture timeout", async () => {
+  it("does not wait for a stalled telemetry response", async () => {
     const server = http.createServer(() => {});
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -68,15 +71,14 @@ describe("built capture hooks", () => {
         url: `http://127.0.0.1:${address.port}`,
       });
       expect(result.code).toBe(0);
-      expect(result.elapsed).toBeGreaterThanOrEqual(2800);
-      expect(result.elapsed).toBeLessThan(5000);
+      expect(result.elapsed).toBeLessThan(1100);
     } finally {
       server.close();
       await once(server, "close");
     }
   });
 
-  it("sends Codex Stop only to summarize", async () => {
+  it("sends Codex Stop only to session end", async () => {
     const paths: string[] = [];
     const server = http.createServer((request, response) => {
       paths.push(request.url ?? "");
@@ -94,7 +96,7 @@ describe("built capture hooks", () => {
         url: `http://127.0.0.1:${address.port}`,
       });
       expect(result.code).toBe(0);
-      expect(paths).toEqual(["/agentmemory/summarize"]);
+      expect(paths).toEqual(["/agentmemory/session/end"]);
     } finally {
       server.close();
       await once(server, "close");

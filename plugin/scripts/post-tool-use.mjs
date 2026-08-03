@@ -49,26 +49,25 @@ async function main() {
 	const toolName = data.tool_name ?? data.toolName;
 	const toolInput = data.tool_input ?? data.toolArgs;
 	const { imageData, cleanOutput } = extractImageData(toolOutput(data));
-	try {
-		await fetch(`${REST_URL}/agentmemory/observe`, {
-			method: "POST",
-			headers: authHeaders(),
-			body: JSON.stringify({
-				hookType: "post_tool_use",
-				sessionId,
-				project: resolveProject(data.cwd),
-				cwd: data.cwd || process.cwd(),
-				timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-				data: {
-					tool_name: toolName,
-					tool_input: toolInput,
-					tool_output: truncate(cleanOutput, 8e3),
-					...imageData ? { image_data: imageData } : {}
-				}
-			}),
-			signal: AbortSignal.timeout(3e3)
-		});
-	} catch {}
+	fetch(`${REST_URL}/agentmemory/observe`, {
+		method: "POST",
+		headers: authHeaders(),
+		body: JSON.stringify({
+			hookType: "post_tool_use",
+			sessionId,
+			project: resolveProject(data.cwd),
+			cwd: data.cwd || process.cwd(),
+			timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+			data: {
+				tool_name: toolName,
+				tool_input: toolInput,
+				tool_output: truncate(cleanOutput, 8e3),
+				...imageData ? { image_data: imageData } : {}
+			}
+		}),
+		signal: AbortSignal.timeout(3e3)
+	}).catch(() => {});
+	setTimeout(() => process.exit(0), 500).unref();
 }
 function toolOutput(data) {
 	if (data.tool_response !== void 0) return data.tool_response;

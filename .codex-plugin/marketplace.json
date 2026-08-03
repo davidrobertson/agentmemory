@@ -10,7 +10,7 @@
         "source": "git-subdir",
         "url": "https://github.com/davidrobertson/agentmemory.git",
         "path": "./plugin",
-        "ref": "v0.9.28-codex.1"
+        "ref": "v0.9.28-codex.2"
       },
       "policy": {
         "installation": "AVAILABLE",

@@ -72,12 +72,11 @@ async function main() {
     // Pure telemetry path: caller never reads the response, so don't
     // block on it. AbortSignal.timeout caps the wait the event loop
     // gives the pending socket before exit.
-    try {
-      await fetch(url, {
-        ...init,
-        signal: AbortSignal.timeout(REGISTER_TIMEOUT_MS),
-      });
-    } catch {}
+    fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(REGISTER_TIMEOUT_MS),
+    }).catch(() => {});
+    setTimeout(() => process.exit(0), 500).unref();
     return;
   }
 
