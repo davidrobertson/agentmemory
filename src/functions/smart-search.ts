@@ -249,12 +249,12 @@ export function registerSmartSearchFunction(
         sessionId: memory.sessionIds[0] ?? "memory",
         title: memory.title,
         type: "decision",
-        score: memory.strength,
+        score: memory.strength / 10,
         timestamp: memory.updatedAt,
       }));
       const compact = Array.from(
         new Map(
-          [...hybridCompact, ...durableCompact].map((result) => [
+          [...durableCompact, ...hybridCompact].map((result) => [
             result.obsId,
             result,
           ]),
