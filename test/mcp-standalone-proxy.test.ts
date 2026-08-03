@@ -75,15 +75,14 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
       return new Response("", { status: 404 });
     });
     const res = await handleToolCall("memory_smart_search", {
-      query: "auth bug",
       limit: 5,
       expandIds: "obs_1, obs_2",
     });
     const body = JSON.parse(res.content[0].text);
-    expect(body.query).toBe("auth bug");
     expect(body.mode).toBe("expanded");
     expect(body.results[0].id).toBe("m1");
     expect(searchBody?.["expandIds"]).toEqual(["obs_1", "obs_2"]);
+    expect(searchBody).not.toHaveProperty("query");
   });
 
   it("forwards an optional project on proxied memory_save", async () => {

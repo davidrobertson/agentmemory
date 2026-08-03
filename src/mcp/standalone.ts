@@ -127,10 +127,18 @@ function validate(toolName: string, args: Record<string, unknown>): Validated {
     case "memory_recall":
     case "memory_smart_search": {
       const query = args["query"];
-      if (typeof query !== "string" || !query.trim()) {
-        throw new Error("query is required");
+      const expandIds =
+        toolName === "memory_smart_search"
+          ? normalizeList(args["expandIds"]).slice(0, 20)
+          : [];
+      if ((typeof query !== "string" || !query.trim()) && expandIds.length === 0) {
+        throw new Error(
+          toolName === "memory_smart_search"
+            ? "query or expandIds is required"
+            : "query is required",
+        );
       }
-      v.query = query.trim();
+      if (typeof query === "string" && query.trim()) v.query = query.trim();
       v.limit = parseLimit(args["limit"]);
       const fmt = args["format"];
       if (typeof fmt === "string" && fmt.trim()) {
@@ -143,9 +151,7 @@ function validate(toolName: string, args: Record<string, unknown>): Validated {
         const n = Number(budget);
         if (Number.isFinite(n) && n > 0) v.tokenBudget = Math.floor(n);
       }
-      if (toolName === "memory_smart_search") {
-        v.expandIds = normalizeList(args["expandIds"]).slice(0, 20);
-      }
+      if (toolName === "memory_smart_search") v.expandIds = expandIds;
       return v;
     }
     case "memory_sessions": {
@@ -271,10 +277,13 @@ async function handleLocal(
 
     case "memory_recall":
     case "memory_smart_search": {
-      const query = (v.query || "").toLowerCase();
       const limit = v.limit ?? DEFAULT_LIMIT;
       const all =
         await kvInstance.list<Record<string, unknown>>("mem:memories");
+      if (v.tool === "memory_smart_search" && v.expandIds?.length) {
+        return textResponse({ mode: "expanded", results: [], truncated: false }, true);
+      }
+      const query = (v.query || "").toLowerCase();
       const results = all
         .filter((m) => {
           const text = [

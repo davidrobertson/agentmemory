@@ -131,7 +131,6 @@ export const CORE_TOOLS: McpToolDef[] = [
         },
         limit: { type: "number", description: "Max results (default 10)" },
       },
-      required: ["query"],
     },
   },
   {

@@ -291,13 +291,28 @@ describe("handleToolCall", () => {
     await handleToolCall("memory_save", { content: "anything" }, kv);
     await expect(
       handleToolCall("memory_smart_search", {}, kv),
-    ).rejects.toThrow("query is required");
+    ).rejects.toThrow("query or expandIds is required");
     await expect(
       handleToolCall("memory_smart_search", { query: "" }, kv),
-    ).rejects.toThrow("query is required");
+    ).rejects.toThrow("query or expandIds is required");
     await expect(
       handleToolCall("memory_smart_search", { query: "   " }, kv),
-    ).rejects.toThrow("query is required");
+    ).rejects.toThrow("query or expandIds is required");
+  });
+
+  it("memory_smart_search accepts expandIds without a query", async () => {
+    const kv = new InMemoryKV();
+    const result = await handleToolCall(
+      "memory_smart_search",
+      { expandIds: "obs_1" },
+      kv,
+    );
+
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      mode: "expanded",
+      results: [],
+      truncated: false,
+    });
   });
 
   it("memory_smart_search searches files and concepts, not just title/content (#139)", async () => {
