@@ -29,12 +29,14 @@ function isSdkChildContext(payload) {
 }
 const REST_URL = process.env["AGENTMEMORY_URL"] || "http://localhost:3111";
 const SECRET = process.env["AGENTMEMORY_SECRET"] || "";
+const INJECT_CONTEXT = process.env["AGENTMEMORY_INJECT_CONTEXT"] === "true";
 function authHeaders() {
 	const h = { "Content-Type": "application/json" };
 	if (SECRET) h["Authorization"] = `Bearer ${SECRET}`;
 	return h;
 }
 async function main() {
+	if (!INJECT_CONTEXT) return;
 	let input = "";
 	for await (const chunk of process.stdin) input += chunk;
 	let data;

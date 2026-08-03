@@ -9,6 +9,7 @@ function isSdkChildContext(payload: unknown): boolean {
 
 const REST_URL = process.env["AGENTMEMORY_URL"] || "http://localhost:3111";
 const SECRET = process.env["AGENTMEMORY_SECRET"] || "";
+const INJECT_CONTEXT = process.env["AGENTMEMORY_INJECT_CONTEXT"] === "true";
 
 function authHeaders(): Record<string, string> {
   const h: Record<string, string> = { "Content-Type": "application/json" };
@@ -17,6 +18,8 @@ function authHeaders(): Record<string, string> {
 }
 
 async function main() {
+  if (!INJECT_CONTEXT) return;
+
   let input = "";
   for await (const chunk of process.stdin) {
     input += chunk;

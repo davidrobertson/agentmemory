@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { join } from "node:path";
 
 const HOOKS_DIR = join(import.meta.dirname, "..", "plugin", "scripts");
@@ -124,5 +125,38 @@ describe("session-start hook — context injection gate (#143)", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
+  });
+});
+
+describe("pre-compact hook — context injection gate (#143)", () => {
+  it("writes nothing to stdout when AGENTMEMORY_INJECT_CONTEXT is unset", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ context: "unexpected injected context" }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not expose an address");
+      }
+      const payload = JSON.stringify({
+        session_id: "ses_test",
+        cwd: "/tmp/fake-project",
+      });
+      const result = await runHook("pre-compact.mjs", payload, {
+        AGENTMEMORY_URL: `http://127.0.0.1:${address.port}`,
+      });
+      expect(result.stdout).toBe("");
+      expect(result.exitCode).toBe(0);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 });
