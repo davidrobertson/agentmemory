@@ -1323,7 +1323,7 @@ function getAllTools() {
 		...V010_SLOTS_TOOLS
 	];
 }
-const ENV_FILE = join(join(homedir(), ".agentmemory"), ".env");
+const ENV_FILE = join(process.env["AGENTMEMORY_DATA_DIR"]?.trim() || join(homedir(), ".agentmemory"), ".env");
 let envFileCache;
 function loadEnvFile() {
 	if (envFileCache) return envFileCache;
@@ -1365,7 +1365,7 @@ function getStandalonePersistPath() {
 }
 //#endregion
 //#region src/version.ts
-const VERSION = "0.9.28";
+const VERSION = "0.9.28-codex.1";
 createRequire(import.meta.url);
 //#endregion
 //#region src/state/schema.ts
