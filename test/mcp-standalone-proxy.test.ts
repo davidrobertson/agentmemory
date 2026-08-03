@@ -57,13 +57,15 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
   });
 
   it("proxies memory_smart_search to POST /agentmemory/smart-search", async () => {
+    let searchBody: Record<string, unknown> | undefined;
     installFetch((url, init) => {
       if (url.endsWith("/agentmemory/livez")) return new Response("ok", { status: 200 });
       if (url.endsWith("/agentmemory/smart-search")) {
         const body = JSON.parse((init?.body as string) || "{}");
+        searchBody = body;
         return new Response(
           JSON.stringify({
-            mode: "compact",
+            mode: body.expandIds ? "expanded" : "compact",
             query: body.query,
             results: [{ id: "m1", score: 0.9 }],
           }),
@@ -72,10 +74,16 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
       }
       return new Response("", { status: 404 });
     });
-    const res = await handleToolCall("memory_smart_search", { query: "auth bug", limit: 5 });
+    const res = await handleToolCall("memory_smart_search", {
+      query: "auth bug",
+      limit: 5,
+      expandIds: "obs_1, obs_2",
+    });
     const body = JSON.parse(res.content[0].text);
     expect(body.query).toBe("auth bug");
+    expect(body.mode).toBe("expanded");
     expect(body.results[0].id).toBe("m1");
+    expect(searchBody?.["expandIds"]).toEqual(["obs_1", "obs_2"]);
   });
 
   it("forwards an optional project on proxied memory_save", async () => {
