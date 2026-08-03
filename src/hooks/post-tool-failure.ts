@@ -38,30 +38,31 @@ async function main() {
   const toolInput = data.tool_input ?? data.toolArgs;
   const error = data.error ?? data.errorMessage;
 
-  fetch(`${REST_URL}/agentmemory/observe`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({
-      hookType: "post_tool_failure",
-      sessionId,
-      project: resolveProject(data.cwd as string | undefined),
-      cwd: (data.cwd as string | undefined) || process.cwd(),
-      timestamp: new Date().toISOString(),
-      data: {
-        tool_name: toolName,
-        tool_input:
-          typeof toolInput === "string"
-            ? toolInput.slice(0, 4000)
-            : JSON.stringify(toolInput ?? "").slice(0, 4000),
-        error:
-          typeof error === "string"
-            ? error.slice(0, 4000)
-            : JSON.stringify(error ?? "").slice(0, 4000),
-      },
-    }),
-    signal: AbortSignal.timeout(3000),
-  }).catch(() => {});
-  setTimeout(() => process.exit(0), 500).unref();
+  try {
+    await fetch(`${REST_URL}/agentmemory/observe`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        hookType: "post_tool_failure",
+        sessionId,
+        project: resolveProject(data.cwd as string | undefined),
+        cwd: (data.cwd as string | undefined) || process.cwd(),
+        timestamp: new Date().toISOString(),
+        data: {
+          tool_name: toolName,
+          tool_input:
+            typeof toolInput === "string"
+              ? toolInput.slice(0, 4000)
+              : JSON.stringify(toolInput ?? "").slice(0, 4000),
+          error:
+            typeof error === "string"
+              ? error.slice(0, 4000)
+              : JSON.stringify(error ?? "").slice(0, 4000),
+        },
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {}
 }
 
 main().catch(() => process.exit(0));

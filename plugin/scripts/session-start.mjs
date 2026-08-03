@@ -62,10 +62,12 @@ async function main() {
 		})
 	};
 	if (!INJECT_CONTEXT) {
-		fetch(url, {
-			...init,
-			signal: AbortSignal.timeout(REGISTER_TIMEOUT_MS)
-		}).catch(() => {});
+		try {
+			await fetch(url, {
+				...init,
+				signal: AbortSignal.timeout(REGISTER_TIMEOUT_MS)
+			});
+		} catch {}
 		return;
 	}
 	try {

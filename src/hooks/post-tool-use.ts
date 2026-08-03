@@ -38,25 +38,26 @@ async function main() {
 
   const { imageData, cleanOutput } = extractImageData(toolOutput(data));
 
-  fetch(`${REST_URL}/agentmemory/observe`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({
-      hookType: "post_tool_use",
-      sessionId,
-      project: resolveProject(data.cwd as string | undefined),
-      cwd: (data.cwd as string | undefined) || process.cwd(),
-      timestamp: new Date().toISOString(),
-      data: {
-        tool_name: toolName,
-        tool_input: toolInput,
-        tool_output: truncate(cleanOutput, 8000),
-        ...(imageData ? { image_data: imageData } : {}),
-      },
-    }),
-    signal: AbortSignal.timeout(3000),
-  }).catch(() => {});
-  setTimeout(() => process.exit(0), 500).unref();
+  try {
+    await fetch(`${REST_URL}/agentmemory/observe`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        hookType: "post_tool_use",
+        sessionId,
+        project: resolveProject(data.cwd as string | undefined),
+        cwd: (data.cwd as string | undefined) || process.cwd(),
+        timestamp: new Date().toISOString(),
+        data: {
+          tool_name: toolName,
+          tool_input: toolInput,
+          tool_output: truncate(cleanOutput, 8000),
+          ...(imageData ? { image_data: imageData } : {}),
+        },
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {}
 }
 
 function toolOutput(data: Record<string, unknown>): unknown {
