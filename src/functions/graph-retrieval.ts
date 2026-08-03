@@ -2,7 +2,6 @@ import type {
   GraphNode,
   GraphEdge,
 } from "../types.js";
-import { KV } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
 import {
   GraphIndexReader,
@@ -48,31 +47,6 @@ function buildGraphContext(
   return parts.join(" ");
 }
 
-function neighborsFromArrays(
-  allNodes: GraphNode[],
-  allEdges: GraphEdge[],
-): NeighborProvider {
-  const nodeIndex = new Map<string, GraphNode>();
-  for (const n of allNodes) nodeIndex.set(n.id, n);
-
-  const adjacency = new Map<
-    string,
-    Array<{ node: GraphNode; edge: GraphEdge }>
-  >();
-  const append = (from: string, to: string, edge: GraphEdge): void => {
-    const node = nodeIndex.get(to);
-    if (!node) return;
-    if (!adjacency.has(from)) adjacency.set(from, []);
-    adjacency.get(from)!.push({ node, edge });
-  };
-  for (const edge of allEdges) {
-    append(edge.sourceNodeId, edge.targetNodeId, edge);
-    append(edge.targetNodeId, edge.sourceNodeId, edge);
-  }
-
-  return async (nodeId) => adjacency.get(nodeId) ?? [];
-}
-
 export class GraphRetrieval {
   constructor(private kv: StateKV) {}
 
@@ -81,43 +55,24 @@ export class GraphRetrieval {
     maxDepth = 2,
     maxResults = 20,
   ): Promise<GraphRetrievalResult[]> {
-    if (await graphIndexesReady(this.kv)) {
-      const reader = await GraphIndexReader.open(this.kv);
-      const catalog = await loadNameCatalog(this.kv);
-      const lowered = entityNames.map((e) => e.toLowerCase());
-      const matchingNodes: GraphNode[] = [];
-      for (const entry of catalog) {
-        const nameLower = entry.name.toLowerCase();
-        const matched = lowered.some(
-          (e) => nameLower.includes(e) || e.includes(nameLower),
-        );
-        if (!matched) continue;
-        const node = await reader.getNode(entry.id);
-        if (node) matchingNodes.push(node);
-      }
-      return this.scoreEntityMatches(
-        matchingNodes,
-        (id) => reader.getNeighbors(id),
-        maxDepth,
-        maxResults,
+    if (!(await graphIndexesReady(this.kv))) return [];
+
+    const reader = await GraphIndexReader.open(this.kv);
+    const catalog = await loadNameCatalog(this.kv);
+    const lowered = entityNames.map((e) => e.toLowerCase());
+    const matchingNodes: GraphNode[] = [];
+    for (const entry of catalog) {
+      const nameLower = entry.name.toLowerCase();
+      const matched = lowered.some(
+        (e) => nameLower.includes(e) || e.includes(nameLower),
       );
+      if (!matched) continue;
+      const node = await reader.getNode(entry.id);
+      if (node) matchingNodes.push(node);
     }
-
-    const allNodes = (await this.kv.list<GraphNode>(KV.graphNodes)).filter((n) => !n.stale);
-    const allEdges = (await this.kv.list<GraphEdge>(KV.graphEdges)).filter((e) => !e.stale);
-
-    const matchingNodes = allNodes.filter((n) => {
-      const nameLower = n.name.toLowerCase();
-      return entityNames.some(
-        (e) =>
-          nameLower.includes(e.toLowerCase()) ||
-          e.toLowerCase().includes(nameLower),
-      );
-    });
-
     return this.scoreEntityMatches(
       matchingNodes,
-      neighborsFromArrays(allNodes, allEdges),
+      (id) => reader.getNeighbors(id),
       maxDepth,
       maxResults,
     );
@@ -196,38 +151,23 @@ export class GraphRetrieval {
     maxDepth = 1,
     maxResults = 10,
   ): Promise<GraphRetrievalResult[]> {
-    if (await graphIndexesReady(this.kv)) {
-      const reader = await GraphIndexReader.open(this.kv);
-      const candidateIds = await loadNodeIdsForObservations(this.kv, obsIds);
-      const linkedNodes: GraphNode[] = [];
-      for (const nodeId of candidateIds) {
-        const node = await reader.getNode(nodeId);
-        if (
-          node &&
-          (node.sourceObservationIds ?? []).some((id) => obsIds.includes(id))
-        ) {
-          linkedNodes.push(node);
-        }
+    if (!(await graphIndexesReady(this.kv))) return [];
+
+    const reader = await GraphIndexReader.open(this.kv);
+    const candidateIds = await loadNodeIdsForObservations(this.kv, obsIds);
+    const linkedNodes: GraphNode[] = [];
+    for (const nodeId of candidateIds) {
+      const node = await reader.getNode(nodeId);
+      if (
+        node &&
+        (node.sourceObservationIds ?? []).some((id) => obsIds.includes(id))
+      ) {
+        linkedNodes.push(node);
       }
-      return this.scoreExpansion(
-        linkedNodes,
-        (id) => reader.getNeighbors(id),
-        obsIds,
-        maxDepth,
-        maxResults,
-      );
     }
-
-    const allNodes = (await this.kv.list<GraphNode>(KV.graphNodes)).filter((n) => !n.stale);
-    const allEdges = (await this.kv.list<GraphEdge>(KV.graphEdges)).filter((e) => !e.stale);
-
-    const linkedNodes = allNodes.filter((n) =>
-      n.sourceObservationIds.some((id) => obsIds.includes(id)),
-    );
-
     return this.scoreExpansion(
       linkedNodes,
-      neighborsFromArrays(allNodes, allEdges),
+      (id) => reader.getNeighbors(id),
       obsIds,
       maxDepth,
       maxResults,
@@ -282,37 +222,25 @@ export class GraphRetrieval {
     currentState: GraphEdge[];
     history: GraphEdge[];
   }> {
-    if (await graphIndexesReady(this.kv)) {
-      const reader = await GraphIndexReader.open(this.kv);
-      const catalog = await loadNameCatalog(this.kv);
-      const lower = entityName.toLowerCase();
-      let entity: GraphNode | null = null;
-      for (const entry of catalog) {
-        if (entry.name.toLowerCase() !== lower) continue;
-        const node = await reader.getNode(entry.id);
-        if (node) {
-          entity = node;
-          break;
-        }
-      }
-      if (!entity) return { entity: null, currentState: [], history: [] };
-
-      const relatedEdges = await reader.getIncidentEdges(entity.id);
-      return this.partitionTemporalEdges(entity, relatedEdges, asOf);
+    if (!(await graphIndexesReady(this.kv))) {
+      return { entity: null, currentState: [], history: [] };
     }
 
-    const allNodes = (await this.kv.list<GraphNode>(KV.graphNodes)).filter((n) => !n.stale);
-    const allEdges = (await this.kv.list<GraphEdge>(KV.graphEdges)).filter((e) => !e.stale);
-
-    const entity = allNodes.find(
-      (n) => n.name.toLowerCase() === entityName.toLowerCase(),
-    );
+    const reader = await GraphIndexReader.open(this.kv);
+    const catalog = await loadNameCatalog(this.kv);
+    const lower = entityName.toLowerCase();
+    let entity: GraphNode | null = null;
+    for (const entry of catalog) {
+      if (entry.name.toLowerCase() !== lower) continue;
+      const node = await reader.getNode(entry.id);
+      if (node) {
+        entity = node;
+        break;
+      }
+    }
     if (!entity) return { entity: null, currentState: [], history: [] };
 
-    const relatedEdges = allEdges.filter(
-      (e) => e.sourceNodeId === entity.id || e.targetNodeId === entity.id,
-    );
-
+    const relatedEdges = await reader.getIncidentEdges(entity.id);
     return this.partitionTemporalEdges(entity, relatedEdges, asOf);
   }
 

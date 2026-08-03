@@ -148,21 +148,24 @@ function sortResults<T extends { obsId: string }>(results: T[]): T[] {
 }
 
 describe("graph index parity", () => {
-  it("searchByEntities returns identical results via indexes and enumeration", async () => {
+  it("searchByEntities returns expected results via indexes", async () => {
     const { nodes, edges } = fixtureGraph();
-    const plain = new GraphRetrieval(mockKV(nodes, edges) as never);
     const indexed = new GraphRetrieval((await indexedKV(nodes, edges)) as never);
 
-    for (const query of [["React"], ["auth"], ["react", "state"], ["nope"]]) {
-      const viaList = sortResults(await plain.searchByEntities(query, 3, 20));
-      const viaIndex = sortResults(await indexed.searchByEntities(query, 3, 20));
-      expect(viaIndex).toEqual(viaList);
+    for (const [query, expectedObsIds] of [
+      [["React"], ["obs_auth", "obs_hook", "obs_react", "obs_state"]],
+      [["auth"], ["obs_auth", "obs_hook", "obs_react", "obs_state"]],
+      [["react", "state"], ["obs_auth", "obs_hook", "obs_react", "obs_state"]],
+      [["nope"], []],
+    ] as const) {
+      const results = await indexed.searchByEntities([...query], 3, 20);
+      expect(results.map((result) => result.obsId).sort()).toEqual(expectedObsIds);
     }
   });
 
-  it("searchByEntities parity holds for incrementally indexed writes", async () => {
+  it("incrementally indexed writes match backfilled indexes", async () => {
     const { nodes, edges } = fixtureGraph();
-    const plain = new GraphRetrieval(mockKV(nodes, edges) as never);
+    const backfilled = new GraphRetrieval((await indexedKV(nodes, edges)) as never);
 
     const kv = mockKV(nodes, edges);
     for (const node of nodes) await indexGraphNode(kv as never, node);
@@ -170,24 +173,26 @@ describe("graph index parity", () => {
     await kv.set("mem:graph:index-meta", "current", { version: 1 });
     const indexed = new GraphRetrieval(kv as never);
 
-    const viaList = sortResults(await plain.searchByEntities(["React"], 2));
+    const viaBackfill = sortResults(await backfilled.searchByEntities(["React"], 2));
     const viaIndex = sortResults(await indexed.searchByEntities(["React"], 2));
-    expect(viaIndex).toEqual(viaList);
+    expect(viaIndex).toEqual(viaBackfill);
   });
 
-  it("expandFromChunks returns identical results via indexes and enumeration", async () => {
+  it("expandFromChunks returns expected results via indexes", async () => {
     const { nodes, edges } = fixtureGraph();
-    const plain = new GraphRetrieval(mockKV(nodes, edges) as never);
     const indexed = new GraphRetrieval((await indexedKV(nodes, edges)) as never);
 
-    for (const obsIds of [["obs_react"], ["obs_hook", "obs_auth"], ["obs_x"]]) {
-      const viaList = sortResults(await plain.expandFromChunks(obsIds, 2, 20));
-      const viaIndex = sortResults(await indexed.expandFromChunks(obsIds, 2, 20));
-      expect(viaIndex).toEqual(viaList);
+    for (const [obsIds, expectedObsIds] of [
+      [["obs_react"], ["obs_auth", "obs_hook", "obs_state"]],
+      [["obs_hook", "obs_auth"], ["obs_react", "obs_state"]],
+      [["obs_x"], []],
+    ] as const) {
+      const results = await indexed.expandFromChunks([...obsIds], 2, 20);
+      expect(results.map((result) => result.obsId).sort()).toEqual(expectedObsIds);
     }
   });
 
-  it("temporalQuery returns identical results via indexes and enumeration", async () => {
+  it("temporalQuery returns expected results via indexes", async () => {
     const nodes = [makeNode("n1", "Alice", "person", ["obs_1"])];
     const edges = [
       makeEdge("e1", "n1", "n1", "located_in" as never, 0.9),
@@ -198,27 +203,21 @@ describe("graph index parity", () => {
         isLatest: true,
       },
     ];
-    const plain = new GraphRetrieval(mockKV(nodes, edges) as never);
     const indexed = new GraphRetrieval((await indexedKV(nodes, edges)) as never);
 
-    for (const asOf of [undefined, "2026-01-15T00:00:00.000Z", "2026-03-01T00:00:00.000Z"]) {
-      const viaList = await plain.temporalQuery("Alice", asOf);
-      const viaIndex = await indexed.temporalQuery("Alice", asOf);
-      expect(viaIndex.entity?.id).toBe(viaList.entity?.id);
-      expect(sortResults(mapEdges(viaIndex.currentState))).toEqual(
-        sortResults(mapEdges(viaList.currentState)),
-      );
-      expect(sortResults(mapEdges(viaIndex.history))).toEqual(
-        sortResults(mapEdges(viaList.history)),
-      );
+    for (const [asOf, currentIds, historyIds] of [
+      [undefined, ["e2"], ["e1"]],
+      ["2026-01-15T00:00:00.000Z", ["e1"], ["e1"]],
+      ["2026-03-01T00:00:00.000Z", ["e2"], ["e1", "e2"]],
+    ] as const) {
+      const result = await indexed.temporalQuery("Alice", asOf);
+      expect(result.entity?.id).toBe("n1");
+      expect(result.currentState.map((edge) => edge.id).sort()).toEqual(currentIds);
+      expect(result.history.map((edge) => edge.id).sort()).toEqual(historyIds);
     }
 
     const missingViaIndex = await indexed.temporalQuery("Nobody");
     expect(missingViaIndex.entity).toBeNull();
-
-    function mapEdges(list: GraphEdge[]) {
-      return list.map((e) => ({ obsId: e.id }));
-    }
   });
 
   it("graph-query startNodeId traversal returns identical pages via indexes and enumeration", async () => {
@@ -289,14 +288,23 @@ describe("graph index parity", () => {
     expect(viaIndex.warning).toBeUndefined();
   });
 
-  it("falls back to enumeration when the readiness marker is absent", async () => {
+  it("returns no graph contribution without enumerating when readiness is absent", async () => {
     const { nodes, edges } = fixtureGraph();
     const kv = mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
-    const results = await retrieval.searchByEntities(["React"]);
-    expect(results.length).toBeGreaterThan(0);
-    expect(kv.listCallCount()).toBeGreaterThan(0);
+    const entityResults = await retrieval.searchByEntities(["React"]);
+    const expansionResults = await retrieval.expandFromChunks(["obs_react"]);
+    const temporalResult = await retrieval.temporalQuery("React");
+
+    expect(kv.listCallCount()).toBe(0);
+    expect(entityResults).toEqual([]);
+    expect(expansionResults).toEqual([]);
+    expect(temporalResult).toEqual({
+      entity: null,
+      currentState: [],
+      history: [],
+    });
   });
 
   it("never enumerates when the readiness marker is present", async () => {

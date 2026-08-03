@@ -23,9 +23,8 @@ import {
 import { StateKV } from "./state/kv.js";
 import { KV } from "./state/schema.js";
 import {
-  GRAPH_INDEX_NODE_CEILING,
-  backfillGraphIndexes,
   graphIndexesReady,
+  markGraphIndexesReady,
 } from "./state/graph-indexes.js";
 import { VectorIndex } from "./state/vector-index.js";
 import { HybridSearch } from "./state/hybrid-search.js";
@@ -538,34 +537,17 @@ async function main() {
     }
   }
 
-  // Backfill the graph read side-indexes for corpora that predate
-  // them. Mirrors the BM25 memories backfill above: one-time, gated on
-  // the snapshot's recorded node count so we never enumerate a corpus
-  // large enough to starve the worker heartbeat. While the readiness
-  // marker is absent, graph retrieval falls back to full enumeration,
-  // so skipping here is safe (just slower).
+  // Legacy graph scopes can be too large for state::list without
+  // starving the worker heartbeat. Start a fresh, empty read-index
+  // generation and let all future graph writes maintain it
+  // incrementally; the raw legacy graph records remain untouched.
   try {
     if (!(await graphIndexesReady(kv))) {
-      const graphSnap = await kv.get<import("./types.js").GraphSnapshot>(
-        KV.graphSnapshot,
-        "current",
-      );
-      const totalNodes = graphSnap?.stats?.totalNodes ?? 0;
-      if (graphSnap && totalNodes > 0 && totalNodes <= GRAPH_INDEX_NODE_CEILING) {
-        const [graphNodes, graphEdges] = await Promise.all([
-          kv.list<import("./types.js").GraphNode>(KV.graphNodes),
-          kv.list<import("./types.js").GraphEdge>(KV.graphEdges),
-        ]);
-        await backfillGraphIndexes(
-          kv,
-          graphNodes.filter((n) => !n.stale),
-          graphEdges.filter((e) => !e.stale),
-        );
-        bootLog(`Backfilled graph read indexes (${totalNodes} nodes)`);
-      }
+      await markGraphIndexesReady(kv);
+      bootLog("Initialized empty graph read indexes");
     }
   } catch (err) {
-    console.warn(`[agentmemory] Failed to backfill graph indexes:`, err);
+    console.warn(`[agentmemory] Failed to initialize graph indexes:`, err);
   }
 
   // Ready / Endpoints lines are emitted via `bootLog` so they're
