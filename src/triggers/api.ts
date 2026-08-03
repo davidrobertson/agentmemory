@@ -582,7 +582,12 @@ export function registerApiTriggers(
 
   sdk.registerFunction("api::session::start",
     async (
-      req: ApiRequest<{ sessionId: string; project: string; cwd: string }>,
+      req: ApiRequest<{
+        sessionId: string;
+        project: string;
+        cwd: string;
+        includeContext?: boolean;
+      }>,
     ): Promise<Response> => {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const sessionId = asNonEmptyString(body.sessionId);
@@ -617,6 +622,9 @@ export function registerApiTriggers(
         ...(agentId ? { agentId } : {}),
       };
       await kv.set(KV.sessions, sessionId, session);
+      if (body.includeContext === false) {
+        return { status_code: 200, body: { session } };
+      }
       const contextResult = await sdk.trigger<
         { sessionId: string; project: string; agentId?: string },
         { context: string }

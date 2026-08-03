@@ -58,7 +58,8 @@ async function main() {
 		body: JSON.stringify({
 			sessionId,
 			project,
-			cwd
+			cwd,
+			includeContext: INJECT_CONTEXT
 		})
 	};
 	if (!INJECT_CONTEXT) {

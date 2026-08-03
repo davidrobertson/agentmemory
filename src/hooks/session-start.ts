@@ -60,7 +60,12 @@ async function main() {
   const init: RequestInit = {
     method: "POST",
     headers: authHeaders(),
-    body: JSON.stringify({ sessionId, project, cwd }),
+    body: JSON.stringify({
+      sessionId,
+      project,
+      cwd,
+      includeContext: INJECT_CONTEXT,
+    }),
   };
 
   if (!INJECT_CONTEXT) {
