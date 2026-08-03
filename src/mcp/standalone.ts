@@ -30,18 +30,12 @@ const SERVER_INFO = {
   protocolVersion: "2024-11-05",
 };
 
-const kv = new InMemoryKV(getStandalonePersistPath());
+let kv: InMemoryKV | undefined;
 let modeAnnounced = false;
 
-function displayAgentmemoryUrl(): string {
-  // Match the literal-placeholder guard in rest-proxy.ts so log lines
-  // don't show `${AGENTMEMORY_URL}` when an MCP host passed the
-  // placeholder through unexpanded.
-  const raw = process.env["AGENTMEMORY_URL"];
-  if (!raw || (raw.startsWith("${") && raw.endsWith("}"))) {
-    return "http://localhost:3111";
-  }
-  return raw;
+function standaloneKv(): InMemoryKV {
+  kv ??= new InMemoryKV(getStandalonePersistPath());
+  return kv;
 }
 
 function announceMode(handle: Handle): void {
@@ -54,7 +48,7 @@ function announceMode(handle: Handle): void {
   } else {
     const fullToolCount = getAllTools().length;
     process.stderr.write(
-      `[@agentmemory/mcp] no server reachable at ${displayAgentmemoryUrl()}; running reduced LOCAL FALLBACK with ${IMPLEMENTED_TOOLS.size} of ${fullToolCount} tools. Start 'npx @agentmemory/agentmemory' (and point AGENTMEMORY_URL at it) to unlock all ${fullToolCount} tools.\n`,
+      `[@agentmemory/mcp] no server configured; running reduced LOCAL mode with ${IMPLEMENTED_TOOLS.size} of ${fullToolCount} tools. Start 'npx @agentmemory/agentmemory' and set AGENTMEMORY_URL to unlock all ${fullToolCount} tools.\n`,
     );
   }
 }
@@ -100,6 +94,7 @@ interface Validated {
   type?: string;
   concepts?: string[];
   files?: string[];
+  project?: string;
   query?: string;
   limit?: number;
   format?: string;
@@ -123,6 +118,9 @@ function validate(toolName: string, args: Record<string, unknown>): Validated {
       v.type = (args["type"] as string) || "fact";
       v.concepts = normalizeList(args["concepts"]);
       v.files = normalizeList(args["files"]);
+      if (typeof args["project"] === "string" && args["project"].trim()) {
+        v.project = args["project"].trim();
+      }
       return v;
     }
     case "memory_recall":
@@ -181,6 +179,7 @@ async function handleProxy(
           type: v.type,
           concepts: v.concepts,
           files: v.files,
+          ...(v.project !== undefined && { project: v.project }),
         }),
       });
       return textResponse(result);
@@ -253,6 +252,7 @@ async function handleLocal(
         content: v.content,
         concepts: v.concepts,
         files: v.files,
+        ...(v.project !== undefined && { project: v.project }),
         createdAt: isoNow,
         updatedAt: isoNow,
         strength: 7,
@@ -357,7 +357,7 @@ async function handleProxyGeneric(
 export async function handleToolCall(
   toolName: string,
   args: Record<string, unknown>,
-  kvInstance: InMemoryKV = kv,
+  kvInstance?: InMemoryKV,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   const handle = await resolveHandle();
   announceMode(handle);
@@ -388,12 +388,13 @@ export async function handleToolCall(
       return await handleProxy(validated, handle);
     } catch (err) {
       process.stderr.write(
-        `[@agentmemory/mcp] proxy call failed for ${toolName}: ${err instanceof Error ? err.message : String(err)}; invalidating handle and falling back to local KV\n`,
+        `[@agentmemory/mcp] proxy call failed for ${toolName}: ${err instanceof Error ? err.message : String(err)}; invalidating handle\n`,
       );
       invalidateHandle();
+      throw err;
     }
   }
-  return handleLocal(validated, kvInstance);
+  return handleLocal(validated, kvInstance ?? standaloneKv());
 }
 
 export async function handleToolsList(): Promise<{ tools: unknown[] }> {
@@ -428,14 +429,13 @@ export async function handleToolsList(): Promise<{ tools: unknown[] }> {
         }
         return { tools: remote.tools };
       }
-      process.stderr.write(
-        `[@agentmemory/mcp] tools/list: server returned unexpected shape (no .tools array); falling back to local IMPLEMENTED_TOOLS list. Set AGENTMEMORY_DEBUG=1 to inspect response.\n`,
-      );
+      throw new Error("agentmemory server returned no tools array");
     } catch (err) {
       process.stderr.write(
-        `[@agentmemory/mcp] tools/list proxy failed: ${err instanceof Error ? err.message : String(err)}; falling back to local list\n`,
+        `[@agentmemory/mcp] tools/list proxy failed: ${err instanceof Error ? err.message : String(err)}\n`,
       );
       invalidateHandle();
+      throw err;
     }
   }
   const fallback = getAllTools().filter((t) => IMPLEMENTED_TOOLS.has(t.name));
@@ -494,10 +494,10 @@ process.stderr.write(
 transport.start();
 
 process.on("SIGINT", () => {
-  kv.persist();
+  kv?.persist();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
-  kv.persist();
+  kv?.persist();
   process.exit(0);
 });

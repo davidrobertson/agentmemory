@@ -92,6 +92,19 @@ describe("Codex plugin manifest (developers.openai.com/codex/plugins)", () => {
     );
   });
 
+  it("runs the pinned local AgentMemory MCP build", () => {
+    const mcp = readJson<{
+      mcpServers: { agentmemory: { command: string; args: string[] } };
+    }>(join(pluginRoot, ".mcp.json"));
+    const server = mcp.mcpServers.agentmemory;
+
+    expect(server).toEqual(expect.objectContaining({
+      command: "node",
+      args: ["/Users/djr/Documents/Codex/agentmemory-local/dist/standalone.mjs"],
+    }));
+    expect(existsSync(server.args[0])).toBe(true);
+  });
+
   it("hooks.codex.json contains only events Codex supports (no Subagent / SessionEnd / Notification / TaskCompleted / PostToolUseFailure)", () => {
     const hooksPath = join(pluginRoot, "hooks/hooks.codex.json");
     const hooks = readJson<{ hooks: Record<string, unknown> }>(hooksPath);

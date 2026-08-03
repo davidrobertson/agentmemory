@@ -1,4 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { handleToolCall } from "../src/mcp/standalone.js";
 import { resetHandleForTests } from "../src/mcp/rest-proxy.js";
 import { InMemoryKV } from "../src/mcp/in-memory-kv.js";
@@ -73,6 +76,25 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
     const body = JSON.parse(res.content[0].text);
     expect(body.query).toBe("auth bug");
     expect(body.results[0].id).toBe("m1");
+  });
+
+  it("forwards an optional project on proxied memory_save", async () => {
+    let rememberBody: Record<string, unknown> | undefined;
+    installFetch((url, init) => {
+      if (url.endsWith("/agentmemory/livez")) return new Response("ok", { status: 200 });
+      if (url.endsWith("/agentmemory/remember")) {
+        rememberBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return new Response(JSON.stringify({ saved: "mem_1" }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    await handleToolCall("memory_save", {
+      content: "project scoped",
+      project: "  agentmemory  ",
+    });
+
+    expect(rememberBody?.["project"]).toBe("agentmemory");
   });
 
   it("proxies memory_recall to POST /agentmemory/search and forwards format/token_budget (#507)", async () => {
@@ -168,9 +190,7 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
   });
 
   it("local fallback returns the same shape as proxy for memory_smart_search", async () => {
-    installFetch(() => {
-      throw new Error("ECONNREFUSED");
-    });
+    delete process.env["AGENTMEMORY_URL"];
     const localKv = new InMemoryKV(undefined);
     await handleToolCall("memory_save", { content: "shape-check entry" }, localKv);
     const res = await handleToolCall("memory_smart_search", { query: "shape" }, localKv);
@@ -197,10 +217,8 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
     expect(authByPath.get("/agentmemory/sessions")).toBe("Bearer s3cret");
   });
 
-  it("falls back to local InMemoryKV when server is unreachable", async () => {
-    installFetch(() => {
-      throw new Error("ECONNREFUSED");
-    });
+  it("uses local InMemoryKV when no server is configured", async () => {
+    delete process.env["AGENTMEMORY_URL"];
     const localKv = new InMemoryKV(undefined);
     await handleToolCall("memory_save", { content: "local only" }, localKv);
     const recall = await handleToolCall("memory_recall", { query: "local" }, localKv);
@@ -210,21 +228,80 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
     expect(out.results[0].content).toBe("local only");
   });
 
+  it.each([
+    BASE,
+    "${AGENTMEMORY_URL:-http://localhost:3111}",
+  ])("rejects memory_save without changing local state when configured server %s is unreachable", async (configuredUrl) => {
+    process.env["AGENTMEMORY_URL"] = configuredUrl;
+    installFetch(() => {
+      throw new Error("ECONNREFUSED");
+    });
+    const dir = mkdtempSync(join(tmpdir(), "agentmemory-mcp-"));
+    const persistPath = join(dir, "standalone.json");
+    const original = '{"mem:memories":{"seed":{"content":"unchanged"}}}';
+    writeFileSync(persistPath, original, "utf8");
+    const localKv = new InMemoryKV(persistPath);
+
+    try {
+      await expect(
+        handleToolCall("memory_save", { content: "must not fall back" }, localKv),
+      ).rejects.toThrow();
+      expect(readFileSync(persistPath, "utf8")).toBe(original);
+      expect(await localKv.list("mem:memories")).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects memory_save without changing local state when the proxy call fails after a successful probe", async () => {
+    installFetch((url) => {
+      if (url.endsWith("/agentmemory/livez")) return new Response("ok", { status: 200 });
+      return new Response("boom", { status: 500, statusText: "Internal Server Error" });
+    });
+    const localKv = new InMemoryKV(undefined);
+
+    await expect(
+      handleToolCall("memory_save", { content: "must not fall back" }, localKv),
+    ).rejects.toThrow("POST /agentmemory/remember -> 500 Internal Server Error");
+    expect(await localKv.list("mem:memories")).toEqual([]);
+  });
+
+  it("permits local standalone memory_save with project when AGENTMEMORY_URL is absent", async () => {
+    delete process.env["AGENTMEMORY_URL"];
+    const fetchFn = installFetch(() => {
+      throw new Error("standalone mode must not probe");
+    });
+    const localKv = new InMemoryKV(undefined);
+
+    await handleToolCall(
+      "memory_save",
+      { content: "local only", project: "  agentmemory  " },
+      localKv,
+    );
+
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(await localKv.list("mem:memories")).toEqual([
+      expect.objectContaining({ content: "local only", project: "agentmemory" }),
+    ]);
+  });
+
   it("invalidates the handle on proxy failure, so the next call re-probes", async () => {
     let probeCount = 0;
-    let serverUp = true;
     installFetch((url) => {
       if (url.endsWith("/agentmemory/livez")) {
         probeCount++;
-        return serverUp ? new Response("ok", { status: 200 }) : new Response("", { status: 500 });
+        return new Response("ok", { status: 200 });
       }
       return new Response("boom", { status: 500, statusText: "Internal Server Error" });
     });
     const localKv = new InMemoryKV(undefined);
-    await handleToolCall("memory_save", { content: "first fallback" }, localKv);
+    await expect(
+      handleToolCall("memory_save", { content: "first failure" }, localKv),
+    ).rejects.toThrow();
     expect(probeCount).toBe(1);
-    serverUp = false;
-    await handleToolCall("memory_save", { content: "second fallback" }, localKv);
+    await expect(
+      handleToolCall("memory_save", { content: "second failure" }, localKv),
+    ).rejects.toThrow();
     expect(probeCount).toBe(2);
   });
 
@@ -266,9 +343,7 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
   });
 
   it("rejects non-essential tools when no server is reachable (#234)", async () => {
-    installFetch(() => {
-      throw new Error("ECONNREFUSED");
-    });
+    delete process.env["AGENTMEMORY_URL"];
     const localKv = new InMemoryKV(undefined);
     await expect(
       handleToolCall("memory_lesson_save", { title: "x" }, localKv),
@@ -330,20 +405,20 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
     }) as typeof process.stderr.write;
     try {
       const localKv = new InMemoryKV(undefined);
-      await handleToolCall("memory_save", { content: "diag" }, localKv);
+      await expect(
+        handleToolCall("memory_save", { content: "diag" }, localKv),
+      ).rejects.toThrow("agentmemory server required");
     } finally {
       process.stderr.write = origWrite;
     }
     const joined = writes.join("");
     expect(joined).toMatch(/livez probe .* failed/);
-    expect(joined).toMatch(/AGENTMEMORY_FORCE_PROXY/);
+    expect(joined).toMatch(/ECONNREFUSED 127\.0\.0\.1:3111/);
   });
 
   it("local fallback tools/list returns all 7 IMPLEMENTED_TOOLS regardless of AGENTMEMORY_TOOLS env (#234)", async () => {
     const { handleToolsList } = await import("../src/mcp/standalone.js");
-    installFetch(() => {
-      throw new Error("ECONNREFUSED");
-    });
+    delete process.env["AGENTMEMORY_URL"];
     delete process.env["AGENTMEMORY_TOOLS"];
     const before = await handleToolsList();
     const beforeTools = before.tools as Array<{ name: string }>;
@@ -372,6 +447,9 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
       if (url.endsWith("/agentmemory/livez")) {
         probeStarted++;
         return new Response("ok", { status: 200 });
+      }
+      if (url.endsWith("/agentmemory/remember")) {
+        return new Response(JSON.stringify({ saved: "mem_1" }), { status: 200 });
       }
       return new Response("not found", { status: 404 });
     });

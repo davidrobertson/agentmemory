@@ -143,29 +143,31 @@ describe("InMemoryKV", () => {
 
 describe("handleToolCall", () => {
   const originalFetch = globalThis.fetch;
+  const originalAgentmemoryUrl = process.env["AGENTMEMORY_URL"];
 
   beforeEach(() => {
+    delete process.env["AGENTMEMORY_URL"];
     vi.mocked(writeFileSync).mockClear();
     instantLocalFallbackProbe.mockClear();
     fetchTrap.mockClear();
-    // Order matters: resetHandleForTests() restores the default probe and
-    // clears the cached handle. Install the stub AFTER the reset so the
-    // shim's next resolveHandle() call hits the stubbed instant-fail path
-    // instead of the real 2s AbortController fetch.
+    // Keep a probe trap installed so standalone mode fails loudly if it
+    // starts probing a server again.
     resetHandleForTests();
     setLivezProbe(instantLocalFallbackProbe);
     (globalThis as { fetch: typeof fetch }).fetch = fetchTrap as unknown as typeof fetch;
   });
 
   afterEach(() => {
+    if (originalAgentmemoryUrl === undefined) delete process.env["AGENTMEMORY_URL"];
+    else process.env["AGENTMEMORY_URL"] = originalAgentmemoryUrl;
     (globalThis as { fetch: typeof fetch }).fetch = originalFetch;
     resetHandleForTests();
   });
 
-  it("livez probe stub is invoked instead of the real fetch (issue #449)", async () => {
+  it("does not probe when no server is configured", async () => {
     const kv = new InMemoryKV();
     await handleToolCall("memory_save", { content: "regression guard" }, kv);
-    expect(instantLocalFallbackProbe).toHaveBeenCalledTimes(1);
+    expect(instantLocalFallbackProbe).not.toHaveBeenCalled();
     expect(fetchTrap).not.toHaveBeenCalled();
   });
 
