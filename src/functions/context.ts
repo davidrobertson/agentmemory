@@ -7,6 +7,7 @@ import type {
   ProjectProfile,
   MemorySlot,
   Lesson,
+  Memory,
 } from "../types.js";
 import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
@@ -18,6 +19,7 @@ import {
   renderPinnedContext,
 } from "./slots.js";
 import { getAgentId, isAgentScopeIsolated } from "../config.js";
+import { selectDurableMemories } from "../state/memory-selection.js";
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3);
@@ -70,7 +72,7 @@ export function registerContextFunction(
         );
       }
 
-      const [pinnedSlots, profile, lessons] = await Promise.all([
+      const [pinnedSlots, profile, lessons, memories] = await Promise.all([
         isSlotsEnabled()
           ? listPinnedSlots(kv).catch(() => [] as MemorySlot[])
           : Promise.resolve([] as MemorySlot[]),
@@ -78,6 +80,7 @@ export function registerContextFunction(
           .get<ProjectProfile>(KV.profiles, data.project)
           .catch(() => null),
         kv.list<Lesson>(KV.lessons).catch(() => [] as Lesson[]),
+        kv.list<Memory>(KV.memories).catch(() => [] as Memory[]),
       ]);
 
       const slotContent = renderPinnedContext(pinnedSlots);
@@ -124,6 +127,28 @@ export function registerContextFunction(
             recency: new Date(profile.updatedAt).getTime(),
           });
         }
+      }
+
+      const durableMemories = selectDurableMemories(memories, {
+        project: data.project,
+        agentId: filterAgentId,
+        limit: 10,
+      });
+      if (durableMemories.length > 0) {
+        const content = `## Durable Memories\n${durableMemories
+          .map((memory) => `- ${memory.title}: ${memory.content}`)
+          .join("\n")}`;
+        blocks.push({
+          type: "memory",
+          content,
+          tokens: estimateTokens(content),
+          recency: Math.max(
+            ...durableMemories.map((memory) =>
+              new Date(memory.updatedAt).getTime(),
+            ),
+          ),
+          sourceIds: durableMemories.map((memory) => memory.id),
+        });
       }
 
       // Lessons — closes the loop opened by mem::lesson-save / mem::reflect.

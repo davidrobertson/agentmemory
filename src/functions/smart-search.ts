@@ -5,6 +5,7 @@ import type {
   CompressedObservation,
   HybridSearchResult,
   Lesson,
+  Memory,
 } from "../types.js";
 import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
@@ -17,6 +18,8 @@ import {
 } from "../config.js";
 import { logger } from "../logger.js";
 import { getCounters } from "../telemetry/setup.js";
+import { memoryToObservation } from "../state/memory-utils.js";
+import { selectDurableMemories } from "../state/memory-selection.js";
 
 // #771: smart-search followup-rate diagnostic. Stored per session as
 // the most recent search payload, used to detect whether the next
@@ -156,9 +159,14 @@ export function registerSmartSearchFunction(
           if (r) expanded.push(r);
         }
 
-        const scoped = filterAgentId
-          ? expanded.filter((e) => e.observation.agentId === filterAgentId)
-          : expanded;
+        const scoped = expanded.filter(
+          (entry) =>
+            (filterAgentId === undefined ||
+              entry.observation.agentId === filterAgentId) &&
+            (data.project === undefined ||
+              entry.observation.project === undefined ||
+              entry.observation.project === data.project),
+        );
 
         void recordAccessBatch(
           kv,
@@ -196,20 +204,34 @@ export function registerSmartSearchFunction(
         ? Math.min(limit * 3, 300)
         : limit;
 
-      const [hybridResults, lessons] = await Promise.all([
+      const [hybridResults, lessons, memories] = await Promise.all([
         searchFn(data.query, overFetchLimit),
         includeLessons
           ? recallLessons(sdk, data.query, lessonLimit, data.project)
           : Promise.resolve([]),
+        kv.list<Memory>(KV.memories).catch(() => [] as Memory[]),
       ]);
 
-      const filteredHybrid = filterAgentId
-        ? hybridResults
-            .filter((r) => r.observation.agentId === filterAgentId)
-            .slice(0, limit)
-        : hybridResults.slice(0, limit);
+      const durableById = new Set(memories.map((memory) => memory.id));
+      const eligibleDurableIds = new Set(
+        selectDurableMemories(memories, {
+          project: data.project,
+          agentId: filterAgentId,
+          limit: memories.length,
+        }).map((memory) => memory.id),
+      );
+      const filteredHybrid = hybridResults.filter(
+        (result) =>
+          (filterAgentId === undefined ||
+            result.observation.agentId === filterAgentId) &&
+          (data.project === undefined ||
+            result.observation.project === undefined ||
+            result.observation.project === data.project) &&
+          (!durableById.has(result.observation.id) ||
+            eligibleDurableIds.has(result.observation.id)),
+      );
 
-      const compact: CompactSearchResult[] = filteredHybrid.map((r) => ({
+      const hybridCompact: CompactSearchResult[] = filteredHybrid.map((r) => ({
         obsId: r.observation.id,
         sessionId: r.sessionId,
         title: r.observation.title,
@@ -217,6 +239,27 @@ export function registerSmartSearchFunction(
         score: r.combinedScore,
         timestamp: r.observation.timestamp,
       }));
+      const durableCompact = selectDurableMemories(memories, {
+        query: data.query,
+        project: data.project,
+        agentId: filterAgentId,
+        limit: Math.min(limit, 20),
+      }).map((memory): CompactSearchResult => ({
+        obsId: memory.id,
+        sessionId: memory.sessionIds[0] ?? "memory",
+        title: memory.title,
+        type: "decision",
+        score: memory.strength,
+        timestamp: memory.updatedAt,
+      }));
+      const compact = Array.from(
+        new Map(
+          [...hybridCompact, ...durableCompact].map((result) => [
+            result.obsId,
+            result,
+          ]),
+        ).values(),
+      ).slice(0, limit);
 
       void recordAccessBatch(
         kv,
@@ -364,6 +407,12 @@ async function findObservation(
   obsId: string,
   sessionIdHint?: string,
 ): Promise<CompressedObservation | null> {
+  const memory = await kv.get<Memory>(KV.memories, obsId).catch(() => null);
+  const selectedMemory = memory
+    ? selectDurableMemories([memory], { limit: 1 })[0]
+    : undefined;
+  if (selectedMemory) return memoryToObservation(selectedMemory);
+
   if (sessionIdHint) {
     const obs = await kv
       .get<CompressedObservation>(KV.observations(sessionIdHint), obsId)
@@ -379,7 +428,7 @@ async function findObservation(
         kv.get<CompressedObservation>(KV.observations(s.id), obsId).catch(() => null),
       ),
     );
-    const found = results.find((r) => r !== null);
+    const found = results.find((result) => result != null);
     if (found) return found;
   }
   return null;
