@@ -63,6 +63,10 @@ export default defineConfig([
     entry: ["src/mcp/standalone.ts"],
     outDir: "dist",
     ...shared,
+    deps: {
+      ...shared.deps,
+      alwaysBundle: ["picocolors"],
+    },
     clean: false,
     sourcemap: false,
   },

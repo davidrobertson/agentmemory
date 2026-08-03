@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "agentmemory": {
+      "cwd": ".",
       "command": "node",
-      "args": ["/Users/djr/Documents/Codex/agentmemory-local/dist/standalone.mjs"],
+      "args": ["./dist/standalone.mjs"],
       "env": {
         "AGENTMEMORY_URL": "${AGENTMEMORY_URL:-http://localhost:3111}",
         "AGENTMEMORY_SECRET": "${AGENTMEMORY_SECRET:-}",

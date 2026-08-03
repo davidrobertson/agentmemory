@@ -92,17 +92,20 @@ describe("Codex plugin manifest (developers.openai.com/codex/plugins)", () => {
     );
   });
 
-  it("runs the pinned local AgentMemory MCP build", () => {
+  it("runs the bundled AgentMemory MCP build from any install path", () => {
     const mcp = readJson<{
-      mcpServers: { agentmemory: { command: string; args: string[] } };
+      mcpServers: {
+        agentmemory: { cwd?: string; command: string; args: string[] };
+      };
     }>(join(pluginRoot, ".mcp.json"));
     const server = mcp.mcpServers.agentmemory;
 
     expect(server).toEqual(expect.objectContaining({
+      cwd: ".",
       command: "node",
-      args: ["/Users/djr/Documents/Codex/agentmemory-local/dist/standalone.mjs"],
+      args: ["./dist/standalone.mjs"],
     }));
-    expect(existsSync(server.args[0])).toBe(true);
+    expect(existsSync(join(pluginRoot, server.args[0]))).toBe(true);
   });
 
   it("hooks.codex.json contains only events Codex supports (no Subagent / SessionEnd / Notification / TaskCompleted / PostToolUseFailure)", () => {
@@ -167,6 +170,7 @@ describe("Codex marketplace.json (.codex-plugin/marketplace.json at repo root)",
     expect(entry.name).toBe("agentmemory");
     expect(entry.source.source).toBe("git-subdir");
     expect(entry.source.path).toBe("./plugin");
-    expect(entry.source.url).toMatch(/rohitg00\/agentmemory/);
+    expect(entry.source.url).toBe("https://github.com/davidrobertson/agentmemory.git");
+    expect(entry.source.ref).toBe("v0.9.28-codex.1");
   });
 });

@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!plugin/dist/
+!plugin/dist/standalone.mjs
 *.tsbuildinfo
 
 .env
