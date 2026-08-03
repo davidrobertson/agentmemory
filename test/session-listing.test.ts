@@ -74,6 +74,7 @@ describe("session listings", () => {
 
   afterEach(() => {
     resetHandleForTests();
+    setLivezProbe();
   });
 
   it("orders valid sessions newest first with an ID tie-break and skips malformed rows across all surfaces", async () => {
