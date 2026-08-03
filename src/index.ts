@@ -22,6 +22,10 @@ import {
 } from "./providers/index.js";
 import { StateKV } from "./state/kv.js";
 import { KV } from "./state/schema.js";
+import {
+  graphIndexesReady,
+  markGraphIndexesReady,
+} from "./state/graph-indexes.js";
 import { VectorIndex } from "./state/vector-index.js";
 import { HybridSearch } from "./state/hybrid-search.js";
 import { IndexPersistence } from "./state/index-persistence.js";
@@ -530,6 +534,19 @@ async function main() {
         err,
       );
     }
+  }
+
+  // Legacy graph scopes can be too large for state::list without
+  // starving the worker heartbeat. Start a fresh, empty read-index
+  // generation and let all future graph writes maintain it
+  // incrementally; the raw legacy graph records remain untouched.
+  try {
+    if (!(await graphIndexesReady(kv))) {
+      await markGraphIndexesReady(kv);
+      bootLog("Initialized empty graph read indexes");
+    }
+  } catch (err) {
+    console.warn(`[agentmemory] Failed to initialize graph indexes:`, err);
   }
 
   // Ready / Endpoints lines are emitted via `bootLog` so they're

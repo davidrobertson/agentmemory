@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { GraphRetrieval } from "../src/functions/graph-retrieval.js";
+import { backfillGraphIndexes } from "../src/state/graph-indexes.js";
 import type { GraphNode, GraphEdge } from "../src/types.js";
 
-function mockKV(
+async function mockKV(
   nodes: GraphNode[] = [],
   edges: GraphEdge[] = [],
 ) {
@@ -15,7 +16,7 @@ function mockKV(
   for (const e of edges) edgesMap.set(e.id, e);
   store.set("mem:graph:edges", edgesMap);
 
-  return {
+  const kv = {
     get: async <T>(scope: string, key: string): Promise<T | null> => {
       return (store.get(scope)?.get(key) as T) ?? null;
     },
@@ -32,6 +33,8 @@ function mockKV(
       return entries ? (Array.from(entries.values()) as T[]) : [];
     },
   };
+  await backfillGraphIndexes(kv as never, nodes, edges);
+  return kv;
 }
 
 function makeNode(
@@ -76,7 +79,7 @@ describe("GraphRetrieval", () => {
       makeNode("n1", "React", "library", ["obs_1"]),
       makeNode("n2", "Vue", "library", ["obs_2"]),
     ];
-    const kv = mockKV(nodes, []);
+    const kv = await mockKV(nodes, []);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.searchByEntities(["React"]);
@@ -86,7 +89,7 @@ describe("GraphRetrieval", () => {
 
   it("finds entities by partial name match", async () => {
     const nodes = [makeNode("n1", "auth-middleware", "function", ["obs_1"])];
-    const kv = mockKV(nodes, []);
+    const kv = await mockKV(nodes, []);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.searchByEntities(["auth"]);
@@ -99,7 +102,7 @@ describe("GraphRetrieval", () => {
       makeNode("n2", "Component", "concept", ["obs_2"]),
     ];
     const edges = [makeEdge("e1", "n1", "n2", "uses")];
-    const kv = mockKV(nodes, edges);
+    const kv = await mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.searchByEntities(["React"], 2);
@@ -109,7 +112,7 @@ describe("GraphRetrieval", () => {
   });
 
   it("returns empty for no matches", async () => {
-    const kv = mockKV([], []);
+    const kv = await mockKV([], []);
     const retrieval = new GraphRetrieval(kv as never);
     const results = await retrieval.searchByEntities(["nonexistent"]);
     expect(results).toEqual([]);
@@ -121,7 +124,7 @@ describe("GraphRetrieval", () => {
       makeNode("n2", "jwt", "concept", ["obs_2"]),
     ];
     const edges = [makeEdge("e1", "n1", "n2", "uses")];
-    const kv = mockKV(nodes, edges);
+    const kv = await mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.expandFromChunks(["obs_1"]);
@@ -131,7 +134,7 @@ describe("GraphRetrieval", () => {
 
   it("does not duplicate already-seen observations in expansion", async () => {
     const nodes = [makeNode("n1", "file.ts", "file", ["obs_1", "obs_2"])];
-    const kv = mockKV(nodes, []);
+    const kv = await mockKV(nodes, []);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.expandFromChunks(["obs_1"]);
@@ -149,7 +152,7 @@ describe("GraphRetrieval", () => {
         isLatest: true,
       },
     ];
-    const kv = mockKV(nodes, edges);
+    const kv = await mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
     const result = await retrieval.temporalQuery("Alice");
@@ -159,7 +162,7 @@ describe("GraphRetrieval", () => {
   });
 
   it("returns null entity for unknown name", async () => {
-    const kv = mockKV([], []);
+    const kv = await mockKV([], []);
     const retrieval = new GraphRetrieval(kv as never);
     const result = await retrieval.temporalQuery("Unknown");
     expect(result.entity).toBeNull();
@@ -175,7 +178,7 @@ describe("GraphRetrieval", () => {
       makeEdge("e1", "n1", "n2", "uses", 0.9),
       makeEdge("e2", "n2", "n3", "related_to", 0.8),
     ];
-    const kv = mockKV(nodes, edges);
+    const kv = await mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.searchByEntities(["React"], 3);
@@ -204,7 +207,7 @@ describe("GraphRetrieval", () => {
       makeEdge("e_strong_a", "n1", "n2", "related_to", 0.9),
       makeEdge("e_strong_b", "n2", "n3", "related_to", 0.9),
     ];
-    const kv = mockKV(nodes, edges);
+    const kv = await mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.searchByEntities(["Start"], 3);
@@ -224,7 +227,7 @@ describe("GraphRetrieval", () => {
       makeNode("n3", "Lonely", "concept", ["obs_lonely"]),
     ];
     const edges = [makeEdge("e1", "n1", "n2", "related_to", 0.7)];
-    const kv = mockKV(nodes, edges);
+    const kv = await mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.searchByEntities(["A"], 5);
@@ -242,7 +245,7 @@ describe("GraphRetrieval", () => {
     // floor at 0.01 means traversal completes with a very high cost
     // rather than throwing or producing Infinity.
     const edges = [makeEdge("e1", "n1", "n2", "related_to", 0)];
-    const kv = mockKV(nodes, edges);
+    const kv = await mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.searchByEntities(["Anchor"], 2);
@@ -264,7 +267,7 @@ describe("GraphRetrieval", () => {
       makeNode("n2", "Hook", "concept", ["obs_neighbor"]),
     ];
     const edges = [makeEdge("e1", "n1", "n2", "uses", 0.8)];
-    const kv = mockKV(nodes, edges);
+    const kv = await mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.searchByEntities(["React"], 2);
@@ -288,7 +291,7 @@ describe("GraphRetrieval", () => {
       makeEdge("e2", "n2", "n3", "related_to", 0.8),
       makeEdge("e3", "n3", "n4", "related_to", 0.8),
     ];
-    const kv = mockKV(nodes, edges);
+    const kv = await mockKV(nodes, edges);
     const retrieval = new GraphRetrieval(kv as never);
 
     const results = await retrieval.searchByEntities(["Start"], 2);
