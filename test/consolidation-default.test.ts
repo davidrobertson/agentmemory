@@ -18,6 +18,7 @@ const ENV_KEYS = [
 
 const ORIGINAL_HOME = process.env["HOME"];
 const ORIGINAL_USERPROFILE = process.env["USERPROFILE"];
+const ORIGINAL_DATA_DIR = process.env["AGENTMEMORY_DATA_DIR"];
 const ORIGINAL: Record<string, string | undefined> = {};
 
 let sandboxHome: string;
@@ -38,6 +39,7 @@ describe("isConsolidationEnabled default behavior", () => {
     sandboxHome = mkdtempSync(join(tmpdir(), "agentmemory-consolidation-"));
     process.env["HOME"] = sandboxHome;
     process.env["USERPROFILE"] = sandboxHome;
+    delete process.env["AGENTMEMORY_DATA_DIR"];
     for (const k of ENV_KEYS) {
       ORIGINAL[k] = process.env[k];
       delete process.env[k];
@@ -49,6 +51,8 @@ describe("isConsolidationEnabled default behavior", () => {
     else process.env["HOME"] = ORIGINAL_HOME;
     if (ORIGINAL_USERPROFILE === undefined) delete process.env["USERPROFILE"];
     else process.env["USERPROFILE"] = ORIGINAL_USERPROFILE;
+    if (ORIGINAL_DATA_DIR === undefined) delete process.env["AGENTMEMORY_DATA_DIR"];
+    else process.env["AGENTMEMORY_DATA_DIR"] = ORIGINAL_DATA_DIR;
     for (const k of ENV_KEYS) {
       if (ORIGINAL[k] === undefined) delete process.env[k];
       else process.env[k] = ORIGINAL[k];

@@ -18,6 +18,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 const ORIGINAL_HOME = process.env["HOME"];
 const ORIGINAL_USERPROFILE = process.env["USERPROFILE"];
+const ORIGINAL_DATA_DIR = process.env["AGENTMEMORY_DATA_DIR"];
 
 let sandboxHome: string;
 
@@ -37,6 +38,7 @@ describe("loadEnvFile", () => {
     sandboxHome = mkdtempSync(join(tmpdir(), "agentmemory-env-"));
     process.env["HOME"] = sandboxHome;
     process.env["USERPROFILE"] = sandboxHome;
+    delete process.env["AGENTMEMORY_DATA_DIR"];
     delete process.env["AGENTMEMORY_AUTO_COMPRESS"];
     delete process.env["AGENTMEMORY_DROP_STALE_INDEX"];
     delete process.env["CONSOLIDATION_ENABLED"];
@@ -50,6 +52,8 @@ describe("loadEnvFile", () => {
     else process.env["HOME"] = ORIGINAL_HOME;
     if (ORIGINAL_USERPROFILE === undefined) delete process.env["USERPROFILE"];
     else process.env["USERPROFILE"] = ORIGINAL_USERPROFILE;
+    if (ORIGINAL_DATA_DIR === undefined) delete process.env["AGENTMEMORY_DATA_DIR"];
+    else process.env["AGENTMEMORY_DATA_DIR"] = ORIGINAL_DATA_DIR;
     rmSync(sandboxHome, { recursive: true, force: true });
   });
 
@@ -102,6 +106,17 @@ describe("loadEnvFile", () => {
     const cfg = await freshConfig();
     expect(cfg.isDropStaleIndexEnabled()).toBe(true);
   });
+
+  it("reads the env file from AGENTMEMORY_DATA_DIR when configured", async () => {
+    const dataDir = join(sandboxHome, "custom-data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, ".env"), "AGENTMEMORY_AUTO_COMPRESS=true");
+    process.env["AGENTMEMORY_DATA_DIR"] = dataDir;
+
+    const cfg = await freshConfig();
+
+    expect(cfg.isAutoCompressEnabled()).toBe(true);
+  });
 });
 
 describe("hydrateProcessEnvFromFile", () => {
@@ -111,6 +126,7 @@ describe("hydrateProcessEnvFromFile", () => {
     sandboxHome = mkdtempSync(join(tmpdir(), "agentmemory-hydrate-"));
     process.env["HOME"] = sandboxHome;
     process.env["USERPROFILE"] = sandboxHome;
+    delete process.env["AGENTMEMORY_DATA_DIR"];
     for (const k of TOUCHED) delete process.env[k];
   });
 
@@ -119,6 +135,8 @@ describe("hydrateProcessEnvFromFile", () => {
     else process.env["HOME"] = ORIGINAL_HOME;
     if (ORIGINAL_USERPROFILE === undefined) delete process.env["USERPROFILE"];
     else process.env["USERPROFILE"] = ORIGINAL_USERPROFILE;
+    if (ORIGINAL_DATA_DIR === undefined) delete process.env["AGENTMEMORY_DATA_DIR"];
+    else process.env["AGENTMEMORY_DATA_DIR"] = ORIGINAL_DATA_DIR;
     for (const k of TOUCHED) delete process.env[k];
     rmSync(sandboxHome, { recursive: true, force: true });
   });
@@ -154,6 +172,7 @@ describe("loadEnvFile cache", () => {
     sandboxHome = mkdtempSync(join(tmpdir(), "agentmemory-cache-"));
     process.env["HOME"] = sandboxHome;
     process.env["USERPROFILE"] = sandboxHome;
+    delete process.env["AGENTMEMORY_DATA_DIR"];
     delete process.env["CACHED_VAR"];
     readFileSyncCalls.length = 0;
   });
@@ -163,6 +182,8 @@ describe("loadEnvFile cache", () => {
     else process.env["HOME"] = ORIGINAL_HOME;
     if (ORIGINAL_USERPROFILE === undefined) delete process.env["USERPROFILE"];
     else process.env["USERPROFILE"] = ORIGINAL_USERPROFILE;
+    if (ORIGINAL_DATA_DIR === undefined) delete process.env["AGENTMEMORY_DATA_DIR"];
+    else process.env["AGENTMEMORY_DATA_DIR"] = ORIGINAL_DATA_DIR;
     delete process.env["CACHED_VAR"];
     rmSync(sandboxHome, { recursive: true, force: true });
   });

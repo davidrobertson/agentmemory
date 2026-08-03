@@ -17,7 +17,8 @@ function safeParseInt(value: string | undefined, fallback: number): number {
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
-const DATA_DIR = join(homedir(), ".agentmemory");
+const DATA_DIR =
+  process.env["AGENTMEMORY_DATA_DIR"]?.trim() || join(homedir(), ".agentmemory");
 const ENV_FILE = join(DATA_DIR, ".env");
 
 let warnPremiumModelShown = false;

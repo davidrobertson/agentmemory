@@ -14,13 +14,16 @@ describe("isSlotsEnabled — reads merged env (#678)", () => {
   let home: string;
   let ORIG_HOME: string | undefined;
   let ORIG_FLAG: string | undefined;
+  let ORIG_DATA_DIR: string | undefined;
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "am-slots-flag-"));
     mkdirSync(join(home, ".agentmemory"), { recursive: true });
     ORIG_HOME = process.env["HOME"];
     ORIG_FLAG = process.env["AGENTMEMORY_SLOTS"];
+    ORIG_DATA_DIR = process.env["AGENTMEMORY_DATA_DIR"];
     process.env["HOME"] = home;
+    delete process.env["AGENTMEMORY_DATA_DIR"];
     delete process.env["AGENTMEMORY_SLOTS"];
     vi.resetModules();
   });
@@ -29,6 +32,8 @@ describe("isSlotsEnabled — reads merged env (#678)", () => {
     if (ORIG_HOME !== undefined) process.env["HOME"] = ORIG_HOME;
     if (ORIG_FLAG !== undefined) process.env["AGENTMEMORY_SLOTS"] = ORIG_FLAG;
     else delete process.env["AGENTMEMORY_SLOTS"];
+    if (ORIG_DATA_DIR !== undefined) process.env["AGENTMEMORY_DATA_DIR"] = ORIG_DATA_DIR;
+    else delete process.env["AGENTMEMORY_DATA_DIR"];
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -61,13 +66,16 @@ describe("isReflectEnabled — reads merged env (#678)", () => {
   let home: string;
   let ORIG_HOME: string | undefined;
   let ORIG_FLAG: string | undefined;
+  let ORIG_DATA_DIR: string | undefined;
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "am-reflect-flag-"));
     mkdirSync(join(home, ".agentmemory"), { recursive: true });
     ORIG_HOME = process.env["HOME"];
     ORIG_FLAG = process.env["AGENTMEMORY_REFLECT"];
+    ORIG_DATA_DIR = process.env["AGENTMEMORY_DATA_DIR"];
     process.env["HOME"] = home;
+    delete process.env["AGENTMEMORY_DATA_DIR"];
     delete process.env["AGENTMEMORY_REFLECT"];
     vi.resetModules();
   });
@@ -76,6 +84,8 @@ describe("isReflectEnabled — reads merged env (#678)", () => {
     if (ORIG_HOME !== undefined) process.env["HOME"] = ORIG_HOME;
     if (ORIG_FLAG !== undefined) process.env["AGENTMEMORY_REFLECT"] = ORIG_FLAG;
     else delete process.env["AGENTMEMORY_REFLECT"];
+    if (ORIG_DATA_DIR !== undefined) process.env["AGENTMEMORY_DATA_DIR"] = ORIG_DATA_DIR;
+    else delete process.env["AGENTMEMORY_DATA_DIR"];
     rmSync(home, { recursive: true, force: true });
   });
 
