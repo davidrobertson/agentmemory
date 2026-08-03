@@ -3,6 +3,7 @@ import type { Session, CompressedObservation, HookPayload, CommitLink, SessionSu
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
+import { MAX_SESSION_LIST_LIMIT, selectSessions } from "../state/sessions.js";
 import { getLatestHealth } from "../health/monitor.js";
 import type { MetricsStore } from "../eval/metrics-store.js";
 import type { ResilientProvider } from "../providers/resilient.js";
@@ -523,10 +524,7 @@ export function registerApiTriggers(
     async (req: ApiRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const sessions = await kv.list<Session>(KV.sessions);
-      sessions.sort((a, b) =>
-        (b.startedAt || "").localeCompare(a.startedAt || ""),
-      );
+      const sessions = selectSessions(await kv.list(KV.sessions));
       return { status_code: 200, body: { success: true, sessions } };
     },
   );
@@ -836,7 +834,16 @@ export function registerApiTriggers(
     async (req: ApiRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const sessions = await kv.list<Session>(KV.sessions);
+      const requestedLimit = parseOptionalPositiveInt(req.query_params?.["limit"]);
+      if (requestedLimit === null) {
+        return { status_code: 400, body: { error: "limit must be a positive integer" } };
+      }
+      const sessions = selectSessions(
+        await kv.list(KV.sessions),
+        requestedLimit === undefined
+          ? undefined
+          : Math.min(requestedLimit, MAX_SESSION_LIST_LIMIT),
+      );
       const normalizedAgentId =
         typeof req.query_params?.["agentId"] === "string"
           ? req.query_params["agentId"].trim()

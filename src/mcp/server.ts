@@ -1,6 +1,7 @@
 import type { ISdk, ApiRequest } from "iii-sdk";
 import type { StateKV } from "../state/kv.js";
 import { KV } from "../state/schema.js";
+import { MAX_SESSION_LIST_LIMIT, selectSessions } from "../state/sessions.js";
 import type {
   SessionSummary,
   Memory,
@@ -253,7 +254,12 @@ export function registerMcpEndpoints(
           }
 
           case "memory_sessions": {
-            const sessions = await kv.list(KV.sessions);
+            const requestedLimit = asNumber(args.limit);
+            const limit =
+              Number.isInteger(requestedLimit) && (requestedLimit ?? 0) > 0
+                ? Math.min(requestedLimit, MAX_SESSION_LIST_LIMIT)
+                : 20;
+            const sessions = selectSessions(await kv.list(KV.sessions), limit);
             return {
               status_code: 200,
               body: {

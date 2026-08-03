@@ -343,6 +343,10 @@ describe("handleToolCall", () => {
       await kv.set("mem:sessions", `ses_${i}`, {
         id: `ses_${i}`,
         project: "demo",
+        cwd: "/demo",
+        startedAt: `2026-01-0${i + 1}T00:00:00.000Z`,
+        status: "completed",
+        observationCount: 0,
       });
     }
     const result = await handleToolCall(

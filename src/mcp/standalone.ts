@@ -6,6 +6,7 @@ import { getAllTools } from "./tools-registry.js";
 import { getStandalonePersistPath } from "../config.js";
 import { VERSION } from "../version.js";
 import { generateId } from "../state/schema.js";
+import { selectSessions } from "../state/sessions.js";
 import {
   resolveHandle,
   invalidateHandle,
@@ -288,10 +289,11 @@ async function handleLocal(
     }
 
     case "memory_sessions": {
-      const sessions =
-        await kvInstance.list<Record<string, unknown>>("mem:sessions");
-      const limit = v.limit ?? 20;
-      return textResponse({ sessions: sessions.slice(0, limit) }, true);
+      const sessions = selectSessions(
+        await kvInstance.list("mem:sessions"),
+        v.limit ?? 20,
+      );
+      return textResponse({ sessions }, true);
     }
 
     case "memory_governance_delete": {
