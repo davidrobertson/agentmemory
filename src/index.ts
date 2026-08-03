@@ -39,7 +39,7 @@ import { registerDiskSizeManager } from "./functions/disk-size-manager.js";
 import { registerCompressFunction } from "./functions/compress.js";
 import {
   registerSearchFunction,
-  rebuildIndex,
+  ensureSearchIndexReady,
   getSearchIndex,
   setVectorIndex,
   setEmbeddingProvider,
@@ -391,9 +391,10 @@ async function main() {
     graphWeight,
   );
 
-  registerSmartSearchFunction(sdk, kv, (query, limit) =>
-    hybridSearch.search(query, limit),
-  );
+  registerSmartSearchFunction(sdk, kv, async (query, limit) => {
+    await ensureSearchIndexReady(kv);
+    return hybridSearch.search(query, limit);
+  });
   registerRecentSearchesSweepFunction(sdk, kv);
 
   registerApiTriggers(sdk, kv, secret, metricsStore, provider);
@@ -484,7 +485,7 @@ async function main() {
     // unbound for the duration). The index lazily fills in over time
     // and search degrades gracefully — partial coverage > no viewer
     // for hours. Errors still surface via the inner .catch.
-    void rebuildIndex(kv)
+    void ensureSearchIndexReady(kv)
       .then((indexCount) => {
         if (indexCount > 0) {
           bootLog(`Search index rebuilt: ${indexCount} entries`);

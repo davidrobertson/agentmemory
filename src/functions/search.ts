@@ -13,15 +13,7 @@ import { getAgentId, isAgentScopeIsolated } from "../config.js";
 let index: SearchIndex | null = null
 let vectorIndex: VectorIndex | null = null
 let currentEmbeddingProvider: EmbeddingProvider | null = null
-
-// Dedupes the lazy cold-start rebuild kicked off from the mem::search
-// request path. A full rebuildIndex walks every observation across every
-// session, so N concurrent queries against an empty index would each
-// launch their own rebuild and saturate the engine invocation pool. The
-// first query with an empty index starts one rebuild and shares its
-// promise; concurrent queries await the same rebuild instead of spawning
-// duplicates. The boot-time rebuild in index.ts is unaffected.
-let rebuildPromise: Promise<number> | null = null
+let searchIndexReady: Promise<number> | null = null
 
 export function getSearchIndex(): SearchIndex {
   if (!index) index = new SearchIndex()
@@ -340,6 +332,15 @@ export async function rebuildIndex(kv: StateKV): Promise<number> {
   return indexed
 }
 
+export function ensureSearchIndexReady(kv: StateKV): Promise<number> {
+  if (searchIndexReady) return searchIndexReady
+  if (getSearchIndex().size > 0) return Promise.resolve(0)
+  searchIndexReady = rebuildIndex(kv).finally(() => {
+    searchIndexReady = null
+  })
+  return searchIndexReady
+}
+
 export function registerSearchFunction(sdk: ISdk, kv: StateKV): void {
   sdk.registerFunction(
     'mem::search',
@@ -352,8 +353,6 @@ export function registerSearchFunction(sdk: ISdk, kv: StateKV): void {
       token_budget?: number
       agentId?: string
     }) => {
-      const idx = getSearchIndex()
-
       // Input validation / normalization.
       if (typeof data?.query !== 'string' || !data.query.trim()) {
         throw new Error('mem::search: query must be a non-empty string')
@@ -417,27 +416,11 @@ export function registerSearchFunction(sdk: ISdk, kv: StateKV): void {
         tokenBudget = data.token_budget
       }
 
-      if (idx.size === 0) {
-        // Share one rebuild across concurrent cold-start queries so they
-        // don't each walk the whole corpus and saturate the pool.
-        if (!rebuildPromise) {
-          rebuildPromise = rebuildIndex(kv)
-            .then((count) => {
-              logger.info('Search index rebuilt', { entries: count })
-              return count
-            })
-            .catch((err) => {
-              logger.warn('Index rebuild failed', {
-                error: err instanceof Error ? err.message : String(err),
-              })
-              return 0
-            })
-            .finally(() => {
-              rebuildPromise = null
-            })
-        }
-        await rebuildPromise
+      const count = await ensureSearchIndexReady(kv)
+      if (count > 0) {
+        logger.info('Search index rebuilt', { entries: count })
       }
+      const idx = getSearchIndex()
 
       // When filtering by project/cwd, over-fetch from the index so the
       // post-filter still has a chance of returning `effectiveLimit` results.
