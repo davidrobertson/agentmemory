@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 
 vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -82,6 +82,8 @@ const mockProvider = {
   compress: vi.fn().mockResolvedValue(""),
   summarize: vi.fn(),
 };
+
+afterEach(() => vi.unstubAllEnvs());
 
 function makeNode(
   id: string,
@@ -320,6 +322,7 @@ describe("graph index parity", () => {
   });
 
   it("graph-extract maintains the side-indexes after a rebuild", async () => {
+    vi.stubEnv("GRAPH_EXTRACTION_ENABLED", "true");
     mockProvider.compress.mockResolvedValueOnce(`<entities>
 <entity type="file" name="src/index.ts"/>
 <entity type="function" name="main"/>

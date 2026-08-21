@@ -43,6 +43,7 @@ import {
   setVectorIndex,
   setEmbeddingProvider,
   setIndexPersistence,
+  setHybridRanker,
 } from "./functions/search.js";
 import { registerContextFunction } from "./functions/context.js";
 import { registerSummarizeFunction } from "./functions/summarize.js";
@@ -276,11 +277,11 @@ async function main() {
     );
   }
 
-  if (isGraphExtractionEnabled()) {
-    registerGraphFunction(sdk, kv, provider);
-    registerGraphImportFunction(sdk, kv);
-    bootLog(`Knowledge graph: extraction enabled`);
-  }
+  registerGraphFunction(sdk, kv, provider);
+  registerGraphImportFunction(sdk, kv);
+  bootLog(
+    `Knowledge graph: structural extraction on (LLM relations ${isGraphExtractionEnabled() ? "enabled" : "off"})`,
+  );
 
   registerConsolidationPipelineFunction(sdk, kv, provider);
   bootLog(`Consolidation pipeline: registered (CONSOLIDATION_ENABLED=${isConsolidationEnabled() ? "true" : "false"})`);
@@ -390,10 +391,12 @@ async function main() {
     graphWeight,
   );
 
-  registerSmartSearchFunction(sdk, kv, async (query, limit) => {
+  const hybridRanker = async (query: string, limit: number) => {
     await ensureSearchIndexReady(kv);
     return hybridSearch.search(query, limit);
-  });
+  };
+  registerSmartSearchFunction(sdk, kv, hybridRanker);
+  setHybridRanker(hybridRanker);
   registerRecentSearchesSweepFunction(sdk, kv);
 
   registerApiTriggers(sdk, kv, secret, metricsStore, provider);

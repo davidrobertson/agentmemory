@@ -161,6 +161,7 @@ export function registerCompressFunction(
               ...(imageDescription ? { imageDescription } : {}),
               ...(data.raw.imageData ? { imageRef: data.raw.imageData } : {}),
               ...(data.raw.agentId ? { agentId: data.raw.agentId } : {}),
+              ...(data.raw.origin ? { origin: data.raw.origin } : {}),
             };
           } else {
             failure = "parse_failed";
