@@ -91,7 +91,7 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
   if (hasRealValue(env["OPENAI_API_KEY"]) && env["OPENAI_API_KEY_FOR_LLM"] !== "false") {
     return {
       provider: "openai",
-      model: env["OPENAI_MODEL"] || "gpt-4o-mini",
+      model: env["OPENAI_MODEL"] || "gpt-5.6-luna",
       maxTokens,
       baseURL: env["OPENAI_BASE_URL"],
     };
@@ -101,7 +101,7 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
   if (hasRealValue(env["MINIMAX_API_KEY"])) {
     return {
       provider: "minimax",
-      model: env["MINIMAX_MODEL"] || "MiniMax-M2.7",
+      model: env["MINIMAX_MODEL"] || "MiniMax-M3",
       maxTokens,
     };
   }
@@ -109,7 +109,7 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
   if (hasRealValue(env["ANTHROPIC_API_KEY"])) {
     return {
       provider: "anthropic",
-      model: env["ANTHROPIC_MODEL"] || "claude-sonnet-4-20250514",
+      model: env["ANTHROPIC_MODEL"] || "claude-sonnet-5",
       maxTokens,
       baseURL: env["ANTHROPIC_BASE_URL"],
     };
@@ -123,13 +123,12 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
     }
     return {
       provider: "gemini",
-      model: env["GEMINI_MODEL"] || "gemini-2.5-flash",
+      model: env["GEMINI_MODEL"] || "gemini-3.7-flash",
       maxTokens,
     };
   }
   if (hasRealValue(env["OPENROUTER_API_KEY"])) {
-    const model =
-      env["OPENROUTER_MODEL"] || "anthropic/claude-sonnet-4-20250514";
+    const model = env["OPENROUTER_MODEL"] || "anthropic/claude-sonnet-5";
     // warn when the configured OpenRouter model is in the
     // premium tier and likely to burn money on background compression.
     // Captured workload data shows ~$5/35h on claude-sonnet-4 vs
@@ -137,7 +136,7 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
     // Heuristic match avoids hard-coding a pricing table.
     if (
       !warnPremiumModelShown &&
-      /sonnet|opus|gpt-4o(?!.*mini)|gpt-4-turbo/i.test(model) &&
+      /sonnet|opus|gpt-5\.\d+-sol|gpt-4o(?!.*mini)|gpt-4-turbo/i.test(model) &&
       env["AGENTMEMORY_SUPPRESS_COST_WARNING"] !== "1" &&
       env["AGENTMEMORY_SUPPRESS_COST_WARNING"] !== "true"
     ) {
@@ -146,7 +145,7 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
         `[agentmemory] OPENROUTER_MODEL=${model} is in the premium tier. ` +
           `Background compression on this model can cost $5+/day under active use. ` +
           `Cheaper alternatives with comparable quality for memory compression: ` +
-          `deepseek/deepseek-v4-pro, deepseek/deepseek-chat, qwen/qwen3-coder. ` +
+          `deepseek/deepseek-v4-flash-0731, deepseek/deepseek-v4-pro, qwen/qwen3-coder. ` +
           `See README "Cost-aware model selection" for the full table. ` +
           `Set AGENTMEMORY_SUPPRESS_COST_WARNING=1 to silence.\n`,
       );
@@ -182,7 +181,7 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
   );
   return {
     provider: "agent-sdk",
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-5",
     maxTokens,
   };
 }

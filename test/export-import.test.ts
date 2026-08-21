@@ -5,8 +5,8 @@ vi.mock("../src/logger.js", () => ({
 }));
 
 import { registerExportImportFunction } from "../src/functions/export-import.js";
-import { getSearchIndex } from "../src/functions/search.js";
 import { VERSION } from "../src/version.js";
+import { getSearchIndex } from "../src/functions/search.js";
 import type {
   Session,
   CompressedObservation,

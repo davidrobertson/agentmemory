@@ -53,7 +53,9 @@ describe("OpenCode plugin project name resolution", () => {
     else process.env.AGENTMEMORY_PROJECT_NAME = savedProjectName;
   });
 
-  async function projectFor(ctx: Record<string, unknown>): Promise<unknown> {
+  async function startPayloadFor(
+    ctx: Record<string, unknown>,
+  ): Promise<{ project: unknown; cwd: unknown }> {
     const { AgentmemoryCapturePlugin } = await import(
       "../plugin/opencode/agentmemory-capture.ts"
     );
@@ -67,7 +69,12 @@ describe("OpenCode plugin project name resolution", () => {
       (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/session/start"),
     );
     if (!startCall) throw new Error("no /session/start call captured");
-    return JSON.parse((startCall[1] as { body: string }).body).project;
+    const body = JSON.parse((startCall[1] as { body: string }).body);
+    return { project: body.project, cwd: body.cwd };
+  }
+
+  async function projectFor(ctx: Record<string, unknown>): Promise<unknown> {
+    return (await startPayloadFor(ctx)).project;
   }
 
   it("uses trimmed AGENTMEMORY_PROJECT_NAME when set", async () => {
@@ -75,20 +82,50 @@ describe("OpenCode plugin project name resolution", () => {
     expect(await projectFor({ worktree: "/should/be/ignored" })).toBe("my-proj");
   });
 
-  it("treats whitespace-only env value as unset and falls back", async () => {
+  it("treats whitespace-only env value as unset and falls back to the basename", async () => {
     process.env.AGENTMEMORY_PROJECT_NAME = "   ";
-    expect(await projectFor({ worktree: "/repo/alpha" })).toBe("/repo/alpha");
+    expect(await projectFor({ worktree: "/repo/alpha" })).toBe("alpha");
   });
 
-  it("falls back to ctx.worktree when env is unset", async () => {
-    expect(await projectFor({ worktree: "/repo/alpha" })).toBe("/repo/alpha");
+  // Canonicalization: project is the git-toplevel/cwd BASENAME (matching the
+  // hooks' resolveProject), while cwd keeps the full path. A nonexistent dir
+  // cannot be a git repo, so these exercise the basename fallback.
+  it("sends the basename as project and the full path as cwd", async () => {
+    const payload = await startPayloadFor({ worktree: "/repo/alpha" });
+    expect(payload.project).toBe("alpha");
+    expect(payload.cwd).toBe("/repo/alpha");
   });
 
   it("falls back to ctx.project.id when worktree is absent", async () => {
-    expect(await projectFor({ project: { id: "/repo/beta" } })).toBe("/repo/beta");
+    expect(await projectFor({ project: { id: "/repo/beta" } })).toBe("beta");
   });
 
-  it("falls back to process.cwd() when no ctx field is present", async () => {
-    expect(await projectFor({})).toBe(process.cwd());
+  it("resolves the git toplevel basename inside a real repository", async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+    const root = mkdtempSync(join(tmpdir(), "amem-oc-"));
+    const repo = join(root, "oc-fixture-repo");
+    const nested = join(repo, "src", "deep");
+    mkdirSync(nested, { recursive: true });
+    execFileSync("git", ["init", "--quiet"], { cwd: repo, stdio: "ignore" });
+    try {
+      // Subdirectory of the repo still resolves to the repo basename.
+      expect(await projectFor({ worktree: nested })).toBe("oc-fixture-repo");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("OpenCode plugin file-tool matching", () => {
+  const plugin = readFileSync("plugin/opencode/agentmemory-capture.ts", "utf-8");
+
+  it("matches OpenCode's lowercase tool names case-insensitively", () => {
+    // OpenCode reports "read"/"edit"/... in lowercase; the old capitalized
+    // set never matched, silently disabling file enrichment.
+    expect(plugin).toContain('FILE_TOOLS = new Set(["read", "write", "edit", "glob", "grep"])');
+    expect(plugin).toContain('FILE_TOOLS.has(String(input.tool ?? "").toLowerCase())');
   });
 });

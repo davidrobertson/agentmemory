@@ -24,13 +24,16 @@ import type {
   ExportPagination,
   AccessLogExport,
 } from "../types.js";
+import { importOrigin } from "../types.js";
 import { normalizeAccessLog } from "./access-tracker.js";
 import { KV } from "../state/schema.js";
 import { indexGraphEdge, indexGraphNode } from "../state/graph-indexes.js";
+import { checkPayloadFrameSize } from "../state/frame-guard.js";
 import { StateKV } from "../state/kv.js";
 import { VERSION } from "../version.js";
 import { recordAudit } from "./audit.js";
 import { indexRecords } from "./search.js";
+import { resetLessonIndex } from "./lessons.js";
 import { logger } from "../logger.js";
 
 // Bounded-concurrency chunk size for the import delete/write loops. A
@@ -182,6 +185,19 @@ export function registerExportImportFunction(sdk: ISdk, kv: StateKV): void {
         summaries: summaries.length,
       });
 
+      // Only session collections page on ?maxSessions/?offset, so a large
+      // store can exceed the transport cap even at ?maxSessions=1.
+      const oversized = checkPayloadFrameSize(
+        exportData,
+        "narrow the range with ?maxSessions / ?offset, or export fewer collections; the non-session collections (memories, graph, semantic, actions, lessons, ...) are not yet paginated",
+      );
+      if (oversized) {
+        logger.warn("Export exceeds transport frame limit", {
+          bytes: oversized.bytes,
+        });
+        return oversized;
+      }
+
       return exportData;
     },
   );
@@ -201,7 +217,7 @@ export function registerExportImportFunction(sdk: ISdk, kv: StateKV): void {
       const strategy = data.strategy || "merge";
       const importData = data.exportData;
 
-      const supportedVersions = new Set(["0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.6.1", "0.7.0", "0.7.2", "0.7.3", "0.7.4", "0.7.5", "0.7.6", "0.7.7", "0.7.9", "0.8.0", "0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5", "0.8.6", "0.8.7", "0.8.8", "0.8.9", "0.8.10", "0.8.11", "0.8.12", "0.8.13", "0.9.0", "0.9.1", "0.9.2", "0.9.3", "0.9.4", "0.9.5", "0.9.6", "0.9.7", "0.9.8", "0.9.9", "0.9.10", "0.9.11", "0.9.12", "0.9.13", "0.9.14", "0.9.15", "0.9.16", "0.9.17", "0.9.18", "0.9.19", "0.9.20", "0.9.21", "0.9.22", "0.9.23", "0.9.24", "0.9.25", "0.9.26", "0.9.27", "0.9.28", "0.9.28-codex.1", "0.9.28-codex.2"]);
+      const supportedVersions = new Set(["0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.6.1", "0.7.0", "0.7.2", "0.7.3", "0.7.4", "0.7.5", "0.7.6", "0.7.7", "0.7.9", "0.8.0", "0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5", "0.8.6", "0.8.7", "0.8.8", "0.8.9", "0.8.10", "0.8.11", "0.8.12", "0.8.13", "0.9.0", "0.9.1", "0.9.2", "0.9.3", "0.9.4", "0.9.5", "0.9.6", "0.9.7", "0.9.8", "0.9.9", "0.9.10", "0.9.11", "0.9.12", "0.9.13", "0.9.14", "0.9.15", "0.9.16", "0.9.17", "0.9.18", "0.9.19", "0.9.20", "0.9.21", "0.9.22", "0.9.23", "0.9.24", "0.9.25", "0.9.26", "0.9.27", "0.9.28", "0.9.29", "0.9.28-codex.1", "0.9.28-codex.2", "0.9.29-codex.1"]);
       if (!supportedVersions.has(importData.version)) {
         return {
           success: false,
@@ -352,6 +368,7 @@ export function registerExportImportFunction(sdk: ISdk, kv: StateKV): void {
           await kv.list<Lesson>(KV.lessons).catch(() => []),
           (l) => kv.delete(KV.lessons, l.id),
         );
+        resetLessonIndex();
         await runChunked(
           await kv.list<Insight>(KV.insights).catch(() => []),
           (i) => kv.delete(KV.insights, i.id),
@@ -415,6 +432,7 @@ export function registerExportImportFunction(sdk: ISdk, kv: StateKV): void {
               return;
             }
           }
+          o.origin = importOrigin(o.origin, o.timestamp);
           await kv.set(KV.observations(sessionId), o.id, o);
           stats.observations++;
           indexObs.push(o);
@@ -435,6 +453,7 @@ export function registerExportImportFunction(sdk: ISdk, kv: StateKV): void {
         if (!Array.isArray(memory.sessionIds)) {
           memory.sessionIds = [];
         }
+        memory.origin = importOrigin(memory.origin, memory.createdAt);
         await kv.set(KV.memories, memory.id, memory);
         stats.memories++;
         indexMems.push(memory);
@@ -596,6 +615,7 @@ export function registerExportImportFunction(sdk: ISdk, kv: StateKV): void {
           }
           await kv.set(KV.lessons, lesson.id, lesson);
         });
+        resetLessonIndex();
       }
       if (importData.insights) {
         await runChunked(importData.insights, async (insight) => {

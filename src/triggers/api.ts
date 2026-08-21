@@ -2,6 +2,7 @@ import { TriggerAction, type ISdk, type ApiRequest } from "iii-sdk";
 import type { Session, CompressedObservation, HookPayload, CommitLink, SessionSummary } from "../types.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { KV } from "../state/schema.js";
+import { checkPayloadFrameSize } from "../state/frame-guard.js";
 import { StateKV } from "../state/kv.js";
 import { MAX_SESSION_LIST_LIMIT, selectSessions } from "../state/sessions.js";
 import { getLatestHealth } from "../health/monitor.js";
@@ -23,6 +24,7 @@ import {
   detectLlmProviderKind,
   getAgentId,
   isAgentScopeIsolated,
+  loadConfig,
 } from "../config.js";
 
 type Response = {
@@ -164,10 +166,23 @@ export function registerApiTriggers(
     },
   );
 
+  // Shared instance metadata for livez and health so the two never
+  // drift. streamsPort lets the viewer resolve its stream WebSocket
+  // target from the server instead of port arithmetic, which broke
+  // whenever the viewer bound a fallback port. Config is boot-static,
+  // so read it once instead of rebuilding the merged env per request.
+  const bootStreamsPort = loadConfig().streamsPort;
+  const instanceInfo = () => ({
+    service: "agentmemory",
+    viewerPort: getBoundViewerPort(),
+    viewerSkipped: getViewerSkipped(),
+    streamsPort: bootStreamsPort,
+  });
+
   sdk.registerFunction("api::liveness",
     async (): Promise<Response> => ({
       status_code: 200,
-      body: { status: "ok", service: "agentmemory", viewerPort: getBoundViewerPort(), viewerSkipped: getViewerSkipped() },
+      body: { status: "ok", ...instanceInfo() },
     }),
   );
   sdk.registerTrigger({
@@ -268,8 +283,7 @@ export function registerApiTriggers(
           health: health || null,
           functionMetrics,
           circuitBreaker,
-          viewerPort: getBoundViewerPort(),
-          viewerSkipped: getViewerSkipped(),
+          ...instanceInfo(),
         },
       };
     },
@@ -1016,6 +1030,7 @@ export function registerApiTriggers(
         ttlDays?: number;
         sourceObservationIds?: string[];
         project?: string;
+        agentId?: string;
       }>,
     ): Promise<Response> => {
       const authErr = checkAuth(req, secret);
@@ -1043,6 +1058,9 @@ export function registerApiTriggers(
           ...(req.body.ttlDays !== undefined && { ttlDays: req.body.ttlDays }),
           ...(req.body.sourceObservationIds !== undefined && { sourceObservationIds: req.body.sourceObservationIds }),
           ...(req.body.project !== undefined && { project: req.body.project }),
+          ...(typeof req.body.agentId === "string" && req.body.agentId.trim()
+            ? { agentId: req.body.agentId.trim() }
+            : {}),
         },
       });
       return { status_code: 201, body: result };
@@ -2781,9 +2799,10 @@ export function registerApiTriggers(
       const sinceTime = since ? new Date(since).getTime() : 0;
       const df = <T>(items: T[], field: "updatedAt" | "createdAt") =>
         items.filter((i) => new Date((i as Record<string, unknown>)[field] as string).getTime() > sinceTime);
-      const memories = await kv.list<import("../types.js").Memory>(KV.memories);
+      let memories = await kv.list<import("../types.js").Memory>(KV.memories);
       let actions = await kv.list<import("../types.js").Action>(KV.actions);
       if (project) {
+        memories = memories.filter((m) => m.project === project);
         actions = actions.filter((a) => a.project === project);
       }
       const body: Record<string, unknown> = {
@@ -2803,6 +2822,14 @@ export function registerApiTriggers(
           (n) => new Date(n.updatedAt || n.createdAt).getTime() > sinceTime,
         );
         body.graphEdges = df(graphEdges, "createdAt");
+      }
+      // Fail an over-frame export with 413 instead of dropping the worker.
+      const oversized = checkPayloadFrameSize(
+        body,
+        "use ?since to fetch only changes after a timestamp, or ?project to scope the export",
+      );
+      if (oversized) {
+        return { status_code: 413, body: oversized };
       }
       return { status_code: 200, body };
     },
