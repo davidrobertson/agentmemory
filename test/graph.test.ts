@@ -4,7 +4,11 @@ vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { registerGraphFunction } from "../src/functions/graph.js";
+import {
+  persistGraphDelta,
+  registerGraphFunction,
+} from "../src/functions/graph.js";
+import { isGraphObservationProcessed } from "../src/state/graph-observations.js";
 import type {
   CompressedObservation,
   GraphNode,
@@ -114,6 +118,431 @@ describe("Graph Functions", () => {
     const edges = await kv.list<GraphEdge>("mem:graph:edges");
     expect(edges.length).toBe(1);
     expect(edges[0].type).toBe("uses");
+    expect(await isGraphObservationProcessed(kv as never, testObs.id)).toBe(
+      true,
+    );
+  });
+
+  it("skips an already processed observation before invoking the provider", async () => {
+    const first = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean; nodesAdded: number; edgesAdded: number };
+    expect(first).toMatchObject({ success: true, nodesAdded: 2, edgesAdded: 1 });
+
+    mockProvider.compress.mockResolvedValueOnce(`<entities>
+<entity type="file" name="src/different.ts"/>
+<entity type="function" name="different"/>
+</entities>
+<relationships>
+<relationship type="uses" source="src/different.ts" target="different"/>
+</relationships>`);
+    const repeated = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean; nodesAdded: number; edgesAdded: number };
+
+    expect(repeated).toMatchObject({ success: true, nodesAdded: 0, edgesAdded: 0 });
+    expect(mockProvider.compress).toHaveBeenCalledTimes(1);
+    expect(await kv.list<GraphNode>("mem:graph:nodes")).toHaveLength(2);
+    expect(await kv.list<GraphEdge>("mem:graph:edges")).toHaveLength(1);
+  });
+
+  it("retries a lookup-index failure without leaving graph records behind", async () => {
+    const set = kv.set.bind(kv);
+    let rejectNameIndex = true;
+    kv.set = vi.fn(async (scope: string, key: string, data: unknown) => {
+      if (scope === "mem:graph:name-index" && rejectNameIndex) {
+        rejectNameIndex = false;
+        throw new Error("name index unavailable");
+      }
+      return set(scope, key, data);
+    }) as typeof kv.set;
+
+    const failed = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(failed.success).toBe(false);
+    expect(await kv.list<GraphNode>("mem:graph:nodes")).toHaveLength(0);
+
+    const retried = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(retried.success).toBe(true);
+    expect(await kv.list<GraphNode>("mem:graph:nodes")).toHaveLength(2);
+    expect(await kv.list<GraphEdge>("mem:graph:edges")).toHaveLength(1);
+  });
+
+  it.each([
+    ["node", "mem:graph:name-shards"],
+    ["edge", "mem:graph:adjacency"],
+  ])("repairs snapshot state after a post-record %s index failure", async (_kind, failedScope) => {
+    const set = kv.set.bind(kv);
+    let rejectIndex = true;
+    kv.set = vi.fn(async (scope: string, key: string, data: unknown) => {
+      if (scope === failedScope && rejectIndex) {
+        rejectIndex = false;
+        throw new Error("derived index unavailable");
+      }
+      return set(scope, key, data);
+    }) as typeof kv.set;
+
+    const failed = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(failed.success).toBe(false);
+
+    const retried = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(retried.success).toBe(true);
+    const snapshot = await kv.get<{
+      stats: { totalNodes: number; totalEdges: number };
+    }>("mem:graph:snapshot", "current");
+    expect(snapshot?.stats).toMatchObject({ totalNodes: 2, totalEdges: 1 });
+  });
+
+  it("repairs endpoint degrees and snapshot state after a post-record failure", async () => {
+    const set = kv.set.bind(kv);
+    let degreeWrites = 0;
+    kv.set = vi.fn(async (scope: string, key: string, data: unknown) => {
+      if (scope === "mem:graph:node-degree" && ++degreeWrites === 4) {
+        throw new Error("second endpoint unavailable");
+      }
+      return set(scope, key, data);
+    }) as typeof kv.set;
+
+    const failed = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(failed.success).toBe(false);
+    expect(await kv.list<GraphNode>("mem:graph:nodes")).toHaveLength(2);
+    expect(await kv.list<GraphEdge>("mem:graph:edges")).toHaveLength(1);
+
+    const retried = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(retried.success).toBe(true);
+
+    const edge = (await kv.list<GraphEdge>("mem:graph:edges"))[0];
+    expect(await kv.get("mem:graph:node-degree", edge.sourceNodeId)).toBe(1);
+    expect(await kv.get("mem:graph:node-degree", edge.targetNodeId)).toBe(1);
+    const snapshot = await kv.get<{
+      stats: { totalNodes: number; totalEdges: number };
+      topEdges: GraphEdge[];
+    }>("mem:graph:snapshot", "current");
+    expect(snapshot?.stats).toMatchObject({ totalNodes: 2, totalEdges: 1 });
+    expect(snapshot?.topEdges).toHaveLength(1);
+  });
+
+  it("retries an adjacency read failure before committing endpoint degrees", async () => {
+    const get = kv.get.bind(kv);
+    const set = kv.set.bind(kv);
+    let adjacencyWrites = 0;
+    let rejectDegreeRead = false;
+    kv.set = vi.fn(async (scope: string, key: string, data: unknown) => {
+      const result = await set(scope, key, data);
+      if (scope === "mem:graph:adjacency" && ++adjacencyWrites === 2) {
+        rejectDegreeRead = true;
+      }
+      return result;
+    }) as typeof kv.set;
+    kv.get = vi.fn(async <T,>(scope: string, key: string): Promise<T | null> => {
+      if (scope === "mem:graph:adjacency" && rejectDegreeRead) {
+        rejectDegreeRead = false;
+        throw new Error("adjacency read unavailable");
+      }
+      return get<T>(scope, key);
+    }) as typeof kv.get;
+
+    const failed = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(failed.success).toBe(false);
+    expect(await isGraphObservationProcessed(kv as never, testObs.id)).toBe(
+      false,
+    );
+
+    const retried = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(retried.success).toBe(true);
+
+    const edge = (await kv.list<GraphEdge>("mem:graph:edges"))[0];
+    expect(await kv.get("mem:graph:node-degree", edge.sourceNodeId)).toBe(1);
+    expect(await kv.get("mem:graph:node-degree", edge.targetNodeId)).toBe(1);
+    expect(await isGraphObservationProcessed(kv as never, testObs.id)).toBe(
+      true,
+    );
+  });
+
+  it("clears pre-reset adjacency before reusing a node ID", async () => {
+    const resetAt = "2026-02-01T00:00:00.000Z";
+    await kv.set("mem:graph:snapshot", "current", {
+      version: 1,
+      topNodes: [],
+      topEdges: [],
+      topDegrees: {},
+      stats: { totalNodes: 0, totalEdges: 0, nodesByType: {}, edgesByType: {} },
+      updatedAt: resetAt,
+      dirty: false,
+      resetAt,
+    });
+    await kv.set("mem:graph:name-index", "concept|stable-a", "stable-a");
+    await kv.set("mem:graph:nodes", "stable-a", {
+      id: "stable-a",
+      type: "concept",
+      name: "stable-a",
+      properties: {},
+      sourceObservationIds: [],
+      createdAt: resetAt,
+    });
+    await kv.set("mem:graph:adjacency", "stable-a", ["old-e1", "old-e2"]);
+
+    const nodes: GraphNode[] = [
+      {
+        id: "stable-a",
+        type: "concept",
+        name: "stable-a",
+        properties: {},
+        sourceObservationIds: [],
+        createdAt: "2026-02-02T00:00:00.000Z",
+      },
+      {
+        id: "stable-b",
+        type: "concept",
+        name: "stable-b",
+        properties: {},
+        sourceObservationIds: [],
+        createdAt: "2026-02-02T00:00:00.000Z",
+      },
+    ];
+    const edges: GraphEdge[] = [{
+      id: "new-edge",
+      type: "related_to",
+      sourceNodeId: "stable-a",
+      targetNodeId: "stable-b",
+      weight: 1,
+      sourceObservationIds: [],
+      createdAt: "2026-02-02T00:00:00.000Z",
+    }];
+
+    await persistGraphDelta(kv as never, nodes, edges, []);
+
+    expect(await kv.get("mem:graph:adjacency", "stable-a")).toEqual([
+      "new-edge",
+    ]);
+    expect(await kv.get("mem:graph:node-degree", "stable-a")).toBe(1);
+  });
+
+  it("replans an incomplete batch after graph reset", async () => {
+    const oldCreatedAt = "2026-01-01T00:00:00.000Z";
+    const oldNodes: GraphNode[] = ["stable-a", "stable-b"].map((id) => ({
+      id,
+      type: "concept",
+      name: id,
+      properties: { generation: "old" },
+      sourceObservationIds: [],
+      createdAt: oldCreatedAt,
+    }));
+    const oldEdge: GraphEdge = {
+      id: "stable-edge",
+      type: "related_to",
+      sourceNodeId: "stable-a",
+      targetNodeId: "stable-b",
+      weight: 1,
+      sourceObservationIds: [],
+      createdAt: oldCreatedAt,
+    };
+    for (const node of oldNodes) {
+      await kv.set("mem:graph:nodes", node.id, node);
+      await kv.set("mem:graph:name-index", `${node.type}|${node.name}`, node.id);
+    }
+    await kv.set("mem:graph:edges", oldEdge.id, oldEdge);
+    await kv.set(
+      "mem:graph:edge-key",
+      "stable-a|stable-b|related_to",
+      oldEdge.id,
+    );
+    await kv.set("mem:graph:snapshot", "current", {
+      version: 1,
+      topNodes: oldNodes,
+      topEdges: [oldEdge],
+      topDegrees: { "stable-a": 1, "stable-b": 1 },
+      stats: {
+        totalNodes: 2,
+        totalEdges: 1,
+        nodesByType: { concept: 2 },
+        edgesByType: { related_to: 1 },
+      },
+      updatedAt: oldCreatedAt,
+      dirty: false,
+    });
+
+    const set = kv.set.bind(kv);
+    let rejectFirstIndex = true;
+    kv.set = vi.fn(async (scope: string, key: string, data: unknown) => {
+      if (scope === "mem:graph:name-shards" && rejectFirstIndex) {
+        rejectFirstIndex = false;
+        throw new Error("index unavailable");
+      }
+      return set(scope, key, data);
+    }) as typeof kv.set;
+    await expect(
+      persistGraphDelta(kv as never, oldNodes, [oldEdge], ["obs_reset_batch"]),
+    ).rejects.toThrow("index unavailable");
+
+    await sdk.trigger("mem::graph-reset", {});
+    const reset = await kv.get<{ resetAt: string }>(
+      "mem:graph:snapshot",
+      "current",
+    );
+    const newCreatedAt = reset!.resetAt;
+    const freshNodes = oldNodes.map((node) => ({
+      ...node,
+      properties: { generation: "new" },
+      createdAt: newCreatedAt,
+    }));
+    const freshEdge = { ...oldEdge, createdAt: newCreatedAt };
+
+    await persistGraphDelta(
+      kv as never,
+      freshNodes,
+      [freshEdge],
+      ["obs_reset_batch"],
+    );
+
+    const snapshot = await kv.get<{
+      stats: { totalNodes: number; totalEdges: number };
+    }>("mem:graph:snapshot", "current");
+    expect(snapshot?.stats).toMatchObject({ totalNodes: 2, totalEdges: 1 });
+    const persisted = await kv.get<GraphNode>(
+      "mem:graph:nodes",
+      "stable-a",
+    );
+    expect(persisted?.properties).toMatchObject({ generation: "new" });
+    expect(persisted!.createdAt > reset!.resetAt).toBe(true);
+  });
+
+  it.each([
+    ["before persistence", false],
+    ["after persistence", true],
+  ])("retries a snapshot timeout %s without double-counting", async (_label, persistFirst) => {
+    const set = kv.set.bind(kv);
+    let rejectSnapshot = true;
+    kv.set = vi.fn(async (scope: string, key: string, data: unknown) => {
+      if (scope === "mem:graph:snapshot" && rejectSnapshot) {
+        rejectSnapshot = false;
+        if (persistFirst) await set(scope, key, data);
+        throw new Error("snapshot acknowledgement timed out");
+      }
+      return set(scope, key, data);
+    }) as typeof kv.set;
+
+    const failed = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(failed.success).toBe(false);
+
+    const retried = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean };
+    expect(retried.success).toBe(true);
+    const snapshot = await kv.get<{
+      stats: { totalNodes: number; totalEdges: number };
+    }>("mem:graph:snapshot", "current");
+    expect(snapshot?.stats).toMatchObject({ totalNodes: 2, totalEdges: 1 });
+  });
+
+  it("accounts for an older failed batch after a newer batch succeeds", async () => {
+    const firstXml = `<entities>
+<entity type="file" name="src/first.ts"/>
+<entity type="function" name="first"/>
+</entities>
+<relationships>
+<relationship type="uses" source="src/first.ts" target="first"/>
+</relationships>`;
+    const secondXml = `<entities>
+<entity type="file" name="src/second.ts"/>
+<entity type="function" name="second"/>
+</entities>
+<relationships>
+<relationship type="uses" source="src/second.ts" target="second"/>
+</relationships>`;
+    mockProvider.compress
+      .mockResolvedValueOnce(firstXml)
+      .mockResolvedValueOnce(secondXml)
+      .mockResolvedValueOnce(firstXml);
+
+    const set = kv.set.bind(kv);
+    let rejectFirstSnapshot = true;
+    kv.set = vi.fn(async (scope: string, key: string, data: unknown) => {
+      if (scope === "mem:graph:snapshot" && rejectFirstSnapshot) {
+        rejectFirstSnapshot = false;
+        throw new Error("first snapshot unavailable");
+      }
+      return set(scope, key, data);
+    }) as typeof kv.set;
+
+    const first = (await sdk.trigger("mem::graph-extract", {
+      observations: [{ ...testObs, id: "obs_first" }],
+    })) as { success: boolean };
+    expect(first.success).toBe(false);
+
+    const second = (await sdk.trigger("mem::graph-extract", {
+      observations: [{ ...testObs, id: "obs_second" }],
+    })) as { success: boolean };
+    expect(second.success).toBe(true);
+    expect(
+      await kv.get<{ stats: { totalNodes: number; totalEdges: number } }>(
+        "mem:graph:snapshot",
+        "current",
+      ),
+    ).toMatchObject({ stats: { totalNodes: 2, totalEdges: 1 } });
+
+    const retried = (await sdk.trigger("mem::graph-extract", {
+      observations: [{ ...testObs, id: "obs_first" }],
+    })) as { success: boolean };
+    expect(retried.success).toBe(true);
+    expect(
+      await kv.get<{ stats: { totalNodes: number; totalEdges: number } }>(
+        "mem:graph:snapshot",
+        "current",
+      ),
+    ).toMatchObject({ stats: { totalNodes: 4, totalEdges: 2 } });
+  });
+
+  it("links only current observations when repairing an existing node index", async () => {
+    await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+    const nodes = await kv.list<GraphNode>("mem:graph:nodes");
+    const historicalIds = Array.from(
+      { length: 10_000 },
+      (_, index) => `historical_${index}`,
+    );
+    for (const node of nodes) {
+      await kv.set("mem:graph:nodes", node.id, {
+        ...node,
+        sourceObservationIds: [...historicalIds, testObs.id],
+      });
+    }
+
+    const get = kv.get.bind(kv);
+    const historicalStateReads: string[] = [];
+    kv.get = vi.fn(async <T,>(scope: string, key: string): Promise<T | null> => {
+      if (
+        (scope.startsWith("mem:graph:obs-state:v1:") ||
+          scope === "mem:graph:obs-nodes") &&
+        key.startsWith("historical_")
+      ) {
+        historicalStateReads.push(key);
+      }
+      return get<T>(scope, key);
+    }) as typeof kv.get;
+
+    const nextObservation = { ...testObs, id: "obs_2" };
+    const result = (await sdk.trigger("mem::graph-extract", {
+      observations: [nextObservation],
+    })) as { success: boolean };
+    expect(result.success).toBe(true);
+    expect(historicalStateReads).toEqual([]);
   });
 
   it("graph-extract accepts self-closing entity tags", async () => {
@@ -464,6 +893,39 @@ describe("Graph Functions", () => {
       expect(snap!.stats.nodesByType["function"]).toBeGreaterThan(0);
     });
 
+    it("keeps full provenance in graph records without duplicating it into the snapshot", async () => {
+      const sourceObservationIds = Array.from(
+        { length: 10_000 },
+        (_, index) => `obs_${index}`,
+      );
+      await kv.set("mem:graph:nodes", "n_provenance", {
+        id: "n_provenance",
+        type: "concept",
+        name: "provenance",
+        properties: {},
+        sourceObservationIds,
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      await sdk.trigger("mem::graph-snapshot-rebuild", { force: true });
+
+      const raw = await kv.get<{ sourceObservationIds: string[] }>(
+        "mem:graph:nodes",
+        "n_provenance",
+      );
+      const snapshot = await kv.get<{
+        topNodes: Array<{ sourceObservationIds: string[] }>;
+      }>("mem:graph:snapshot", "current");
+      const query = (await sdk.trigger(
+        "mem::graph-query",
+        {},
+      )) as GraphQueryResult & { provenanceOmitted?: boolean };
+
+      expect(raw?.sourceObservationIds).toHaveLength(10_000);
+      expect(snapshot?.topNodes[0]?.sourceObservationIds).toEqual([]);
+      expect(query.provenanceOmitted).toBe(true);
+    });
+
     it("graph-query empty-body branch serves from snapshot once it exists", async () => {
       await seed(20, 30);
       await sdk.trigger("mem::graph-snapshot-rebuild", { force: true });
@@ -529,7 +991,9 @@ describe("Graph Functions", () => {
 
       // Re-extract the same observation. With name-index lookup the
       // existing node merges; no duplicates.
-      await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+      const repeated = (await sdk.trigger("mem::graph-extract", {
+        observations: [testObs],
+      })) as { nodesAdded: number; edgesAdded: number };
       const nodes = await kv.list<{ name: string; type: string }>(
         "mem:graph:nodes",
       );
@@ -537,6 +1001,7 @@ describe("Graph Functions", () => {
         (n) => n.name === "src/index.ts" && n.type === "file",
       );
       expect(fileNodes.length).toBe(1);
+      expect(repeated).toMatchObject({ nodesAdded: 0, edgesAdded: 0 });
     });
 
     it("graph-stats returns empty envelope + warning when no snapshot exists", async () => {
@@ -567,6 +1032,21 @@ describe("Graph Functions", () => {
         stats: { totalNodes: number };
       }>("mem:graph:snapshot", "current");
       expect(snap?.stats.totalNodes).toBe(0);
+
+      expect(await isGraphObservationProcessed(kv as never, testObs.id)).toBe(
+        false,
+      );
+      const replayed = (await sdk.trigger("mem::graph-extract", {
+        observations: [testObs],
+      })) as { success: boolean; nodesAdded: number; edgesAdded: number };
+      expect(replayed).toMatchObject({
+        success: true,
+        nodesAdded: 2,
+        edgesAdded: 1,
+      });
+      expect(await isGraphObservationProcessed(kv as never, testObs.id)).toBe(
+        true,
+      );
     });
 
     it("graph-reset writes empty snapshot; legacy rows stay as orphans (#825)", async () => {
@@ -590,6 +1070,62 @@ describe("Graph Functions", () => {
       }>("mem:graph:snapshot", "current");
       expect(snap?.stats.totalNodes).toBe(0);
       expect(snap?.stats.totalEdges).toBe(0);
+    });
+
+    it("snapshot rebuild keeps reset isolation and counts self-loops once", async () => {
+      const oldCreatedAt = "2026-01-01T00:00:00.000Z";
+      await kv.set("mem:graph:nodes", "legacy", {
+        id: "legacy",
+        type: "concept",
+        name: "legacy",
+        properties: {},
+        sourceObservationIds: [],
+        createdAt: oldCreatedAt,
+      });
+      await sdk.trigger("mem::graph-reset", {});
+      const reset = await kv.get<{ resetAt: string }>(
+        "mem:graph:snapshot",
+        "current",
+      );
+      const currentCreatedAt = new Date(
+        Date.parse(reset!.resetAt) + 1,
+      ).toISOString();
+      await kv.set("mem:graph:nodes", "current", {
+        id: "current",
+        type: "concept",
+        name: "current",
+        properties: {},
+        sourceObservationIds: [],
+        createdAt: currentCreatedAt,
+      });
+      await kv.set("mem:graph:edges", "self", {
+        id: "self",
+        type: "related_to",
+        sourceNodeId: "current",
+        targetNodeId: "current",
+        weight: 1,
+        sourceObservationIds: [],
+        createdAt: currentCreatedAt,
+      });
+
+      const result = (await sdk.trigger("mem::graph-snapshot-rebuild", {
+        force: true,
+      })) as { success: boolean; totalNodes: number; totalEdges: number };
+      const snapshot = await kv.get<{
+        resetAt?: string;
+        stats: { totalNodes: number; totalEdges: number };
+        topDegrees: Record<string, number>;
+      }>("mem:graph:snapshot", "current");
+
+      expect(result).toMatchObject({
+        success: true,
+        totalNodes: 1,
+        totalEdges: 1,
+      });
+      expect(snapshot?.resetAt).toBe(reset?.resetAt);
+      expect(snapshot?.stats).toMatchObject({ totalNodes: 1, totalEdges: 1 });
+      expect(snapshot?.topDegrees.current).toBe(1);
+      expect(await kv.get("mem:graph:node-degree", "current")).toBe(1);
     });
   });
 

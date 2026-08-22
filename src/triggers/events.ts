@@ -9,6 +9,7 @@ import {
   isConsolidationEnabled,
 } from "../config.js";
 import { logger } from "../logger.js";
+import { withKeyedLock } from "../state/keyed-mutex.js";
 
 // Global marker recording when corpus consolidation last ran, used to debounce
 // the per-turn session-stop fan-out.
@@ -93,6 +94,33 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
     config: { topic: "agentmemory.observation" },
   });
 
+  sdk.registerFunction(
+    "mem::graph-extract-session",
+    async (data: { sessionId: string }) =>
+      withKeyedLock(`graph-session:${data.sessionId}`, async () => {
+        const observations = (
+          await kv.list<CompressedObservation>(KV.observations(data.sessionId))
+        )
+          .filter((observation) => observation.title)
+          .sort(
+            (a, b) =>
+              a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id),
+          );
+        if (observations.length === 0) {
+          return { success: true, submitted: 0 };
+        }
+        const result = await sdk.trigger<
+          { observations: CompressedObservation[] },
+          { success: boolean; error?: string }
+        >({
+          function_id: "mem::graph-extract",
+          payload: { observations },
+        });
+        if (!result.success) return result;
+        return { success: true, submitted: observations.length };
+      }),
+  );
+
   sdk.registerFunction("event::session::stopped", async (data: { sessionId: string; skipConsolidation?: boolean }) => {
     const summary = await sdk.trigger({ function_id: "mem::summarize", payload: data });
     const fireVoid = (function_id: string, payload: unknown) =>
@@ -107,21 +135,7 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
     if (isReflectEnabled()) {
       fireVoid("mem::slot-reflect", { sessionId: data.sessionId });
     }
-    // Unconditional: mem::graph-extract gates its LLM pass internally.
-    try {
-      const observations = await kv.list<CompressedObservation>(
-        KV.observations(data.sessionId),
-      );
-      const compressed = observations.filter((o) => o.title);
-      if (compressed.length > 0) {
-        fireVoid("mem::graph-extract", { observations: compressed });
-      }
-    } catch (err) {
-      logger.warn("graph-extract trigger failed", {
-        sessionId: data.sessionId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    fireVoid("mem::graph-extract-session", { sessionId: data.sessionId });
     // Crystals + lessons consolidation. The stop lifecycle is the single
     // source of truth: event::session::stopped fires for ALL agents (the
     // client-side session-end hook no longer drives consolidation directly).

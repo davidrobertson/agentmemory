@@ -5,7 +5,15 @@ vi.mock("../src/logger.js", () => ({
 }));
 
 import { registerReflectFunctions } from "../src/functions/reflect.js";
-import type { Insight, GraphNode, GraphEdge, SemanticMemory, Lesson, Crystal } from "../src/types.js";
+import type {
+  Insight,
+  GraphNode,
+  GraphEdge,
+  GraphSnapshot,
+  SemanticMemory,
+  Lesson,
+  Crystal,
+} from "../src/types.js";
 
 function mockKV() {
   const store = new Map<string, Map<string, unknown>>();
@@ -21,10 +29,10 @@ function mockKV() {
     delete: async (scope: string, key: string): Promise<void> => {
       store.get(scope)?.delete(key);
     },
-    list: async <T>(scope: string): Promise<T[]> => {
+    list: vi.fn(async <T>(scope: string): Promise<T[]> => {
       const entries = store.get(scope);
       return entries ? (Array.from(entries.values()) as T[]) : [];
-    },
+    }),
   };
 }
 
@@ -66,6 +74,23 @@ function makeEdge(src: string, tgt: string): GraphEdge {
     weight: 1,
     sourceObservationIds: [],
     createdAt: "2026-04-01T00:00:00Z",
+  };
+}
+
+function makeSnapshot(nodes: GraphNode[], edges: GraphEdge[]): GraphSnapshot {
+  return {
+    version: 1,
+    topNodes: nodes,
+    topEdges: edges,
+    topDegrees: {},
+    stats: {
+      totalNodes: nodes.length,
+      totalEdges: edges.length,
+      nodesByType: {},
+      edgesByType: {},
+    },
+    updatedAt: "2026-04-01T00:00:00Z",
+    dirty: false,
   };
 }
 
@@ -138,6 +163,22 @@ describe("Reflect", () => {
   });
 
   describe("mem::reflect", () => {
+    it("reads bounded graph data from the snapshot", async () => {
+      const nodes = [makeConceptNode("security"), makeConceptNode("validation")];
+      const edges = [makeEdge("security", "validation")];
+      await kv.set("mem:graph:snapshot", "current", makeSnapshot(nodes, edges));
+      await kv.set("mem:semantic", "sem_1", makeSemantic("Always validate security inputs"));
+      await kv.set("mem:semantic", "sem_2", makeSemantic("Testing improves security coverage"));
+      await kv.set("mem:semantic", "sem_3", makeSemantic("Validation prevents injection"));
+
+      await sdk.trigger("mem::reflect", {});
+
+      const listedScopes = kv.list.mock.calls.map(([scope]) => scope);
+      expect(listedScopes).not.toContain("mem:graph:nodes");
+      expect(listedScopes).not.toContain("mem:graph:edges");
+      expect(provider.summarize).toHaveBeenCalled();
+    });
+
     it("returns empty when no graph nodes or memories exist", async () => {
       const result = (await sdk.trigger("mem::reflect", {})) as {
         success: boolean;
@@ -151,11 +192,18 @@ describe("Reflect", () => {
     });
 
     it("synthesizes insights from graph concept clusters", async () => {
-      await kv.set("mem:graph:nodes", "node_security", makeConceptNode("security"));
-      await kv.set("mem:graph:nodes", "node_validation", makeConceptNode("validation"));
-      await kv.set("mem:graph:nodes", "node_testing", makeConceptNode("testing"));
-      await kv.set("mem:graph:edges", "edge_1", makeEdge("security", "validation"));
-      await kv.set("mem:graph:edges", "edge_2", makeEdge("security", "testing"));
+      await kv.set(
+        "mem:graph:snapshot",
+        "current",
+        makeSnapshot(
+          [
+            makeConceptNode("security"),
+            makeConceptNode("validation"),
+            makeConceptNode("testing"),
+          ],
+          [makeEdge("security", "validation"), makeEdge("security", "testing")],
+        ),
+      );
 
       await kv.set("mem:semantic", "sem_1", makeSemantic("Always validate security inputs"));
       await kv.set("mem:semantic", "sem_2", makeSemantic("Testing improves security coverage"));
@@ -178,9 +226,14 @@ describe("Reflect", () => {
     });
 
     it("skips clusters with fewer than 3 supporting items", async () => {
-      await kv.set("mem:graph:nodes", "node_sparse", makeConceptNode("sparse"));
-      await kv.set("mem:graph:nodes", "node_topic", makeConceptNode("topic"));
-      await kv.set("mem:graph:edges", "edge_1", makeEdge("sparse", "topic"));
+      await kv.set(
+        "mem:graph:snapshot",
+        "current",
+        makeSnapshot(
+          [makeConceptNode("sparse"), makeConceptNode("topic")],
+          [makeEdge("sparse", "topic")],
+        ),
+      );
       await kv.set("mem:semantic", "sem_1", makeSemantic("One sparse fact"));
 
       const result = (await sdk.trigger("mem::reflect", {})) as {
@@ -194,9 +247,14 @@ describe("Reflect", () => {
     });
 
     it("deduplicates insights by fingerprint", async () => {
-      await kv.set("mem:graph:nodes", "node_security", makeConceptNode("security"));
-      await kv.set("mem:graph:nodes", "node_validation", makeConceptNode("validation"));
-      await kv.set("mem:graph:edges", "edge_1", makeEdge("security", "validation"));
+      await kv.set(
+        "mem:graph:snapshot",
+        "current",
+        makeSnapshot(
+          [makeConceptNode("security"), makeConceptNode("validation")],
+          [makeEdge("security", "validation")],
+        ),
+      );
       await kv.set("mem:semantic", "sem_1", makeSemantic("Always validate security inputs"));
       await kv.set("mem:semantic", "sem_2", makeSemantic("Testing improves security coverage"));
       await kv.set("mem:semantic", "sem_3", makeSemantic("Validation prevents injection"));
@@ -236,9 +294,14 @@ describe("Reflect", () => {
     it("handles LLM failure gracefully", async () => {
       provider.summarize.mockRejectedValue(new Error("LLM timeout"));
 
-      await kv.set("mem:graph:nodes", "node_a", makeConceptNode("concept_a"));
-      await kv.set("mem:graph:nodes", "node_b", makeConceptNode("concept_b"));
-      await kv.set("mem:graph:edges", "edge_1", makeEdge("concept_a", "concept_b"));
+      await kv.set(
+        "mem:graph:snapshot",
+        "current",
+        makeSnapshot(
+          [makeConceptNode("concept_a"), makeConceptNode("concept_b")],
+          [makeEdge("concept_a", "concept_b")],
+        ),
+      );
       await kv.set("mem:semantic", "sem_1", makeSemantic("fact about concept_a"));
       await kv.set("mem:semantic", "sem_2", makeSemantic("fact about concept_b"));
       await kv.set("mem:semantic", "sem_3", makeSemantic("concept_a and concept_b together"));

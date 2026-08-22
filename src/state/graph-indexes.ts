@@ -1,7 +1,16 @@
 import type { GraphNode, GraphEdge } from "../types.js";
-import { KV } from "./schema.js";
+import { KV, graphShardKey } from "./schema.js";
 import type { StateKV } from "./kv.js";
 import { withKeyedLock } from "./keyed-mutex.js";
+import {
+  backfillGraphObservationState,
+  linkObservationsToNode,
+} from "./graph-observations.js";
+
+export {
+  linkObservationsToNode,
+  loadNodeIdsForObservations,
+} from "./graph-observations.js";
 
 export const NAME_SHARD_COUNT = 64;
 export const GRAPH_INDEX_NODE_CEILING = 25000;
@@ -14,11 +23,7 @@ export interface NameCatalogEntry {
 }
 
 export function nameShardKey(nodeId: string): string {
-  let hash = 5381;
-  for (let i = 0; i < nodeId.length; i++) {
-    hash = ((hash * 33) ^ nodeId.charCodeAt(i)) >>> 0;
-  }
-  return String(hash % NAME_SHARD_COUNT);
+  return graphShardKey(nodeId, NAME_SHARD_COUNT);
 }
 
 export async function graphIndexesReady(kv: StateKV): Promise<boolean> {
@@ -46,6 +51,7 @@ export async function clearNameShards(kv: StateKV): Promise<void> {
 export async function indexGraphNode(
   kv: StateKV,
   node: GraphNode,
+  observationIds = node.sourceObservationIds,
 ): Promise<void> {
   if (!node?.id || typeof node.name !== "string") return;
   const shard = nameShardKey(node.id);
@@ -57,23 +63,7 @@ export async function indexGraphNode(
       await kv.set(KV.graphNameShards, shard, entries);
     }
   });
-  await linkObservationsToNode(kv, node.id, node.sourceObservationIds);
-}
-
-export async function linkObservationsToNode(
-  kv: StateKV,
-  nodeId: string,
-  obsIds: string[] | undefined,
-): Promise<void> {
-  for (const obsId of obsIds ?? []) {
-    await withKeyedLock(`gidx:obs:${obsId}`, async () => {
-      const nodeIds = (await kv.get<string[]>(KV.graphObsNodes, obsId)) ?? [];
-      if (!nodeIds.includes(nodeId)) {
-        nodeIds.push(nodeId);
-        await kv.set(KV.graphObsNodes, obsId, nodeIds);
-      }
-    });
-  }
+  await linkObservationsToNode(kv, node.id, observationIds);
 }
 
 export async function indexGraphEdge(
@@ -123,22 +113,6 @@ export async function loadAdjacentEdgeIds(
   return Array.isArray(edgeIds) ? edgeIds : [];
 }
 
-export async function loadNodeIdsForObservations(
-  kv: StateKV,
-  obsIds: string[],
-): Promise<string[]> {
-  const ids = new Set<string>();
-  for (const obsId of obsIds) {
-    const nodeIds = await kv
-      .get<string[]>(KV.graphObsNodes, obsId)
-      .catch(() => null);
-    if (Array.isArray(nodeIds)) {
-      for (const id of nodeIds) ids.add(id);
-    }
-  }
-  return [...ids];
-}
-
 export async function readGraphResetAt(
   kv: StateKV,
 ): Promise<string | undefined> {
@@ -153,15 +127,17 @@ export async function readGraphResetAt(
   }
 }
 
-export function isLiveGraphRecord(
-  record: { stale?: boolean; createdAt?: string } | null | undefined,
+export function isLiveGraphRecord<
+  T extends { stale?: boolean; createdAt?: string },
+>(
+  record: T | null | undefined,
   resetAt: string | undefined,
-): boolean {
+): record is T {
   if (!record || record.stale) return false;
   if (
     resetAt &&
     typeof record.createdAt === "string" &&
-    record.createdAt < resetAt
+    record.createdAt <= resetAt
   ) {
     return false;
   }
@@ -284,7 +260,9 @@ export async function backfillGraphIndexes(
     await Promise.all(
       obsEntries
         .slice(i, i + BATCH_SIZE)
-        .map(([obsId, nodeIds]) => kv.set(KV.graphObsNodes, obsId, nodeIds)),
+        .map(([obsId, nodeIds]) =>
+          backfillGraphObservationState(kv, obsId, nodeIds),
+        ),
     );
   }
 

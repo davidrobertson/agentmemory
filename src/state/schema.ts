@@ -54,6 +54,9 @@ export const KV = {
   graphNameShards: "mem:graph:name-shards",
   graphAdjacency: "mem:graph:adjacency",
   graphObsNodes: "mem:graph:obs-nodes",
+  graphObservationState: (shard: string) =>
+    `mem:graph:obs-state:v1:${shard}`,
+  graphBatchState: (shard: string) => `mem:graph:batch-state:v1:${shard}`,
   graphIndexMeta: "mem:graph:index-meta",
   semantic: "mem:semantic",
   procedural: "mem:procedural",
@@ -107,6 +110,14 @@ export function generateId(prefix: string): string {
 export function fingerprintId(prefix: string, content: string): string {
   const hash = createHash("sha256").update(content).digest("hex");
   return `${prefix}_${hash.slice(0, 16)}`;
+}
+
+export function graphShardKey(value: string, shardCount = 64): string {
+  let hash = 5381;
+  for (let index = 0; index < value.length; index++) {
+    hash = ((hash * 33) ^ value.charCodeAt(index)) >>> 0;
+  }
+  return String(hash % shardCount);
 }
 
 // CJK/Japanese/Thai text carries no inter-word whitespace, so a plain

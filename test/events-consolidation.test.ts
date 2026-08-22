@@ -59,6 +59,9 @@ function mockSdk(opts?: { rejectFor?: string }) {
       if (input.function_id === "mem::summarize") {
         return { summary: "session summary", sessionId: "ses_1" };
       }
+      if (input.function_id === "mem::graph-extract") {
+        return { success: true };
+      }
       return { ok: true };
     },
   );
@@ -95,6 +98,7 @@ describe("event::session::stopped consolidation fan-out", () => {
 
     const ids = functionIds(trigger);
     expect(ids).toContain("mem::summarize");
+    expect(ids).toContain("mem::graph-extract-session");
     expect(ids).toContain("mem::consolidate-pipeline");
     expect(ids).toContain("mem::auto-crystallize");
 
@@ -202,6 +206,62 @@ describe("event::session::stopped consolidation fan-out", () => {
       "mem::consolidate-pipeline trigger failed",
       expect.objectContaining({ sessionId: "ses_1" }),
     );
+  });
+});
+
+describe("session graph extraction progress", () => {
+  it("delegates durable processed-marker filtering to graph extraction", async () => {
+    const observations = [
+      { id: "obs_1", sessionId: "ses_1", timestamp: "2026-08-21T12:00:00Z", title: "seen" },
+      { id: "obs_2", sessionId: "ses_1", timestamp: "2026-08-21T12:01:00Z", title: "new" },
+    ];
+    const kv = mockKV();
+    kv.list.mockResolvedValue(observations);
+    kv.get.mockImplementation(async (scope: string, key: string) => {
+      if (scope === "mem:graph:obs-nodes" && key === "obs_1") return ["gn_1"];
+      return null;
+    });
+    const { sdk, handlers, trigger } = mockSdk();
+    registerEventTriggers(sdk as never, kv as never);
+
+    const extractSession = handlers.get("mem::graph-extract-session");
+    expect(extractSession).toBeDefined();
+    if (!extractSession) return;
+    await extractSession({ sessionId: "ses_1" });
+
+    const graphCall = trigger.mock.calls.find(
+      ([input]) => input.function_id === "mem::graph-extract",
+    );
+    expect(graphCall?.[0].payload).toEqual({ observations });
+    expect(kv.get).not.toHaveBeenCalled();
+    expect(kv.update).not.toHaveBeenCalled();
+  });
+
+  it("does not skip an unprocessed observation that arrives out of order", async () => {
+    const observations = [
+      { id: "obs_late", sessionId: "ses_1", timestamp: "2026-08-21T11:00:00Z", title: "late" },
+      { id: "obs_seen", sessionId: "ses_1", timestamp: "2026-08-21T12:00:00Z", title: "seen" },
+    ];
+    const kv = mockKV();
+    kv.list.mockResolvedValue(observations);
+    kv.get.mockImplementation(async (scope: string, key: string) => {
+      if (scope.startsWith("mem:graph:obs-state:v1:") && key === "obs_seen") {
+        return { version: 1, processed: true, nodeIds: ["gn_seen"] };
+      }
+      return null;
+    });
+    const { sdk, handlers, trigger } = mockSdk();
+    registerEventTriggers(sdk as never, kv as never);
+
+    const extractSession = handlers.get("mem::graph-extract-session");
+    expect(extractSession).toBeDefined();
+    if (!extractSession) return;
+    await extractSession({ sessionId: "ses_1" });
+
+    const graphCall = trigger.mock.calls.find(
+      ([input]) => input.function_id === "mem::graph-extract",
+    );
+    expect(graphCall?.[0].payload).toEqual({ observations });
   });
 });
 
