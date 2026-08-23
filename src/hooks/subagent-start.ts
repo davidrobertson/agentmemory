@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./_env.js";
 import { resolveProject, hookCwd } from "./_project.js";
 
 // Inlined from ./sdk-guard so each hook bundles to a single self-contained

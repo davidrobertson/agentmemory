@@ -1,9 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { afterAll, describe, it, expect } from "vitest";
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const HOOKS_DIR = join(import.meta.dirname, "..", "plugin", "scripts");
+const EMPTY_DATA_DIR = mkdtempSync(join(tmpdir(), "agentmemory-context-test-"));
+
+afterAll(() => {
+  rmSync(EMPTY_DATA_DIR, { recursive: true, force: true });
+});
 
 // Spawns a compiled plugin hook as a subprocess, feeds it JSON on stdin,
 // and returns { stdout, stderr, exitCode, tookMs }. The test is about
@@ -31,6 +38,7 @@ function runHook(
           // the hook. Only pass PATH and anything explicitly set by the
           // test case.
           PATH: process.env["PATH"] ?? "",
+          AGENTMEMORY_DATA_DIR: EMPTY_DATA_DIR,
           ...env,
         },
         stdio: ["pipe", "pipe", "pipe"],

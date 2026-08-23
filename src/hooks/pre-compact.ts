@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./_env.js";
 import { resolveProject, hookCwd } from "./_project.js";
 
 function isSdkChildContext(payload: unknown): boolean {

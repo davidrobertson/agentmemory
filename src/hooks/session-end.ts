@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./_env.js";
 import { readFileSync } from "node:fs";
 import { resolveProject, hookCwd } from "./_project.js";
 
