@@ -85,6 +85,8 @@ describe("working-memory", () => {
   });
 
   it("working-context builds core + archival sections", async () => {
+    const derivedContent =
+      "Always pin lockfiles before dependency updates so installs stay reproducible across every supported runtime.";
     mockKv.list.mockImplementation((scope: string) => {
       if (scope === "mem:core-memory") {
         return [
@@ -104,10 +106,19 @@ describe("working-memory", () => {
           {
             id: "m1",
             type: "pattern",
-            title: "API pattern",
-            content: "REST endpoints follow /api/resource convention",
+            title: derivedContent.slice(0, 80),
+            content: derivedContent,
             isLatest: true,
             strength: 0.8,
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: "m2",
+            type: "architecture",
+            title: "Database migration",
+            content: "Database migration requires downtime.",
+            isLatest: true,
+            strength: 0.7,
             updatedAt: new Date().toISOString(),
           },
         ];
@@ -123,6 +134,13 @@ describe("working-memory", () => {
     expect(result.coreEntries).toBe(1);
     expect(result.context).toContain("Core Memory");
     expect(result.context).toContain("Use iii primitives");
+    expect(result.context).toContain(`- [pattern] ${derivedContent}`);
+    expect(result.context).not.toContain(
+      `${derivedContent.slice(0, 80)}: ${derivedContent}`,
+    );
+    expect(result.context).toContain(
+      "- [architecture] Database migration: Database migration requires downtime.",
+    );
   });
 
   it("auto-page removes lowest-value unpinned entries", async () => {

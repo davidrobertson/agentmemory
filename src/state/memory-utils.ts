@@ -1,5 +1,17 @@
 import type { CompressedObservation, Lesson, Memory } from "../types.js";
 
+export function renderMemoryText(
+  memory: Pick<Memory, "title" | "content">,
+): string {
+  const slicedTitle = memory.content.slice(0, 80);
+  const safeTitle = /[\uD800-\uDBFF]$/.test(slicedTitle)
+    ? slicedTitle.slice(0, -1)
+    : slicedTitle;
+  return memory.title === slicedTitle || memory.title === safeTitle
+    ? memory.content
+    : `${memory.title}: ${memory.content}`;
+}
+
 // Wraps a Memory record in the CompressedObservation shape that
 // SearchIndex / VectorIndex / enrichment paths consume. Memories share
 // the same searchable fields as observations (title + content +

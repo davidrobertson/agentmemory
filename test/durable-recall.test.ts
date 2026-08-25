@@ -173,6 +173,42 @@ describe("durable memory recall", () => {
     expect(accessRows).toHaveLength(10);
   });
 
+  it("does not repeat a durable memory title derived from its content", async () => {
+    const derivedContent =
+      "Always pin lockfiles before dependency updates so installs stay reproducible across every supported agent runtime.";
+    const memories = [
+      makeMemory({
+        id: "mem_derived_title",
+        title: derivedContent.slice(0, 80),
+        content: derivedContent,
+        project: "project-a",
+      }),
+      makeMemory({
+        id: "mem_independent_title",
+        title: "Database migration",
+        content: "Database migration requires downtime.",
+        project: "project-a",
+      }),
+    ];
+    for (const memory of memories) {
+      await kv.set(KV.memories, memory.id, memory);
+    }
+    registerContextFunction(sdk as never, kv as never, 20_000);
+
+    const result = (await sdk.trigger("mem::context", {
+      sessionId: "ses_current",
+      project: "project-a",
+    })) as { context: string };
+
+    expect(result.context).toContain(`- ${derivedContent}`);
+    expect(result.context).not.toContain(
+      `${derivedContent.slice(0, 80)}: ${derivedContent}`,
+    );
+    expect(result.context).toContain(
+      "- Database migration: Database migration requires downtime.",
+    );
+  });
+
   it("returns capped, ranked, scoped durable memories when hybrid search is empty", async () => {
     const candidates = [
       makeMemory({ id: "mem_global", content: "needle sentinel global", agentId: "agent-a", strength: 10 }),

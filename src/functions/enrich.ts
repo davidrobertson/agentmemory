@@ -3,6 +3,7 @@ import type { Memory } from "../types.js";
 import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { logger } from "../logger.js";
+import { renderMemoryText } from "../state/memory-utils.js";
 
 const MAX_CONTEXT_LENGTH = 4000;
 
@@ -111,7 +112,7 @@ export function registerEnrichFunction(sdk: ISdk, kv: StateKV): void {
       if (bugMemories.length > 0) {
         const bugs = bugMemories
           .slice(0, 3)
-          .map((m) => `- ${escapeXml(m.title)}: ${escapeXml(m.content)}`)
+          .map((memory) => `- ${escapeXml(renderMemoryText(memory))}`)
           .join("\n");
         parts.push(
           `<agentmemory-past-errors>\n${bugs}\n</agentmemory-past-errors>`,
