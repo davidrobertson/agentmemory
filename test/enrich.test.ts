@@ -210,4 +210,47 @@ describe("Enrich Function", () => {
     expect(result.context).toContain("Race condition");
     expect(result.context).not.toContain("Singleton pattern");
   });
+
+  it("does not repeat a bug memory title derived from its content", async () => {
+    sdk.overrideTrigger("mem::file-context", async () => ({ context: "" }));
+    sdk.overrideTrigger("mem::search", async () => ({ results: [] }));
+    const content = "Race condition in worker pool";
+    const memory = makeMemory({
+      id: "bug_derived_title",
+      title: content,
+      content,
+      files: ["src/worker.ts"],
+    });
+    await kv.set("mem:memories", memory.id, memory);
+
+    const result = (await sdk.trigger("mem::enrich", {
+      sessionId: "ses_1",
+      files: ["src/worker.ts"],
+    })) as { context: string };
+
+    expect(result.context).toContain(`- ${content}`);
+    expect(result.context).not.toContain(`${content}: ${content}`);
+  });
+
+  it("preserves an authored prefix title and escapes the rendered memory", async () => {
+    sdk.overrideTrigger("mem::file-context", async () => ({ context: "" }));
+    sdk.overrideTrigger("mem::search", async () => ({ results: [] }));
+    const memory = makeMemory({
+      id: "bug_authored_title",
+      title: "Race & lock",
+      content: "Race & lock failures occur before <shutdown>.",
+      files: ["src/worker.ts"],
+    });
+    await kv.set("mem:memories", memory.id, memory);
+
+    const result = (await sdk.trigger("mem::enrich", {
+      sessionId: "ses_1",
+      files: ["src/worker.ts"],
+    })) as { context: string };
+
+    expect(result.context).toContain(
+      "- Race &amp; lock: Race &amp; lock failures occur before &lt;shutdown&gt;.",
+    );
+    expect(result.context).not.toContain("<shutdown>");
+  });
 });

@@ -20,6 +20,7 @@ import {
 } from "./slots.js";
 import { getAgentId, isAgentScopeIsolated } from "../config.js";
 import { selectDurableMemories } from "../state/memory-selection.js";
+import { renderMemoryText } from "../state/memory-utils.js";
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3);
@@ -136,7 +137,7 @@ export function registerContextFunction(
       });
       if (durableMemories.length > 0) {
         const content = `## Durable Memories\n${durableMemories
-          .map((memory) => `- ${memory.title}: ${memory.content}`)
+          .map((memory) => `- ${renderMemoryText(memory)}`)
           .join("\n")}`;
         blocks.push({
           type: "memory",

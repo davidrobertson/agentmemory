@@ -5,6 +5,7 @@ import { StateKV } from "../state/kv.js";
 import { recordAudit } from "./audit.js";
 import { recordAccessBatch } from "./access-tracker.js";
 import { logger } from "../logger.js";
+import { renderMemoryText } from "../state/memory-utils.js";
 
 const CORE_SCOPE = "mem:core-memory";
 
@@ -147,7 +148,7 @@ export function registerWorkingMemoryFunctions(
       for (const mem of active) {
         const tokens = estimateTokens(mem.content);
         if (usedTokens + tokens > budget) continue;
-        archivalLines.push(`- [${mem.type}] ${mem.title}: ${mem.content}`);
+        archivalLines.push(`- [${mem.type}] ${renderMemoryText(mem)}`);
         archivalIds.push(mem.id);
         usedTokens += tokens;
       }
