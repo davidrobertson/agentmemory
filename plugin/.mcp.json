@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "agentmemory": {
-      "cwd": ".",
+      "type": "stdio",
       "command": "node",
-      "args": ["./dist/standalone.mjs"],
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/standalone.mjs"],
       "env": {
         "AGENTMEMORY_URL": "${AGENTMEMORY_URL:-http://localhost:3111}",
         "AGENTMEMORY_SECRET": "${AGENTMEMORY_SECRET:-}",

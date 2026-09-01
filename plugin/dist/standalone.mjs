@@ -283,6 +283,10 @@ const CORE_TOOLS = [
 				project: {
 					type: "string",
 					description: "Stable canonical project identifier this memory belongs to (e.g. a slug, UUID, or registry key). Must match the value used when the session was started. Do not use filesystem paths or ad-hoc display names — those change across machines and will silently break project scoping."
+				},
+				agentId: {
+					type: "string",
+					description: "Agent identity to scope this memory to. When set, agent-scoped recall and search only surface it for the same agentId. Omit for shared memory."
 				}
 			},
 			required: ["content"]
@@ -1331,9 +1335,8 @@ function loadEnvFile() {
 		envFileCache = {};
 		return envFileCache;
 	}
-	const content = readFileSync(ENV_FILE, "utf-8");
 	const vars = {};
-	for (const line of content.split("\n")) {
+	for (const line of readFileSync(ENV_FILE, "utf-8").split("\n")) {
 		const trimmed = line.trim();
 		if (!trimmed || trimmed.startsWith("#")) continue;
 		const eqIdx = trimmed.indexOf("=");
@@ -1360,12 +1363,14 @@ function getMergedEnv(overrides) {
 		...overrides
 	};
 }
+//#endregion
+//#region src/config.ts
 function getStandalonePersistPath() {
 	return getMergedEnv()["STANDALONE_PERSIST_PATH"] || join(homedir(), ".agentmemory", "standalone.json");
 }
 //#endregion
 //#region src/version.ts
-const VERSION = "0.9.28-codex.2";
+const VERSION = "0.9.29-codex.1";
 createRequire(import.meta.url);
 //#endregion
 //#region src/state/schema.ts
@@ -1514,10 +1519,15 @@ const IMPLEMENTED_TOOLS = new Set([
 	"memory_audit",
 	"memory_governance_delete"
 ]);
+const SUPPORTED_PROTOCOL_VERSIONS = [
+	"2025-11-25",
+	"2025-06-18",
+	"2025-03-26",
+	"2024-11-05"
+];
 const SERVER_INFO = {
 	name: "agentmemory",
-	version: VERSION,
-	protocolVersion: "2024-11-05"
+	version: VERSION
 };
 let kv;
 let modeAnnounced = false;
@@ -1566,6 +1576,7 @@ function validate(toolName, args) {
 			v.concepts = normalizeList(args["concepts"]);
 			v.files = normalizeList(args["files"]);
 			if (typeof args["project"] === "string" && args["project"].trim()) v.project = args["project"].trim();
+			if (typeof args["agentId"] === "string" && args["agentId"].trim()) v.agentId = args["agentId"].trim();
 			return v;
 		}
 		case "memory_recall":
@@ -1612,7 +1623,8 @@ async function handleProxy(v, handle) {
 				type: v.type,
 				concepts: v.concepts,
 				files: v.files,
-				...v.project !== void 0 && { project: v.project }
+				...v.project !== void 0 && { project: v.project },
+				...v.agentId !== void 0 && { agentId: v.agentId }
 			})
 		}));
 		case "memory_recall": {
@@ -1789,14 +1801,17 @@ async function handleToolsList() {
 }
 const transport = createStdioTransport(async (method, params) => {
 	switch (method) {
-		case "initialize": return {
-			protocolVersion: SERVER_INFO.protocolVersion,
-			capabilities: { tools: { listChanged: false } },
-			serverInfo: {
-				name: SERVER_INFO.name,
-				version: SERVER_INFO.version
-			}
-		};
+		case "initialize": {
+			const requested = params?.protocolVersion;
+			return {
+				protocolVersion: typeof requested === "string" && SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : SUPPORTED_PROTOCOL_VERSIONS[0],
+				capabilities: { tools: { listChanged: false } },
+				serverInfo: {
+					name: SERVER_INFO.name,
+					version: SERVER_INFO.version
+				}
+			};
+		}
 		case "notifications/initialized": return {};
 		case "tools/list": return handleToolsList();
 		case "tools/call": {
