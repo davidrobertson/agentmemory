@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { execSync } from "node:child_process";
+import { captureObservation, isDrainChild, runDrainChild, withEventId } from "./_capture.mjs";
 const ENV_FILE = join(process.env["AGENTMEMORY_DATA_DIR"]?.trim() || join(homedir(), ".agentmemory"), ".env");
 let envFileCache;
 function loadEnvFile() {
@@ -32,12 +33,12 @@ function loadEnvFile() {
 	envFileCache = vars;
 	return envFileCache;
 }
-function hydrateProcessEnvFromFile() {
-	for (const [key, value] of Object.entries(loadEnvFile())) if (process.env[key] === void 0) process.env[key] = value;
+function hydrateProcessEnvFromFile(excludedKeys = []) {
+	for (const [key, value] of Object.entries(loadEnvFile())) if (!excludedKeys.includes(key) && process.env[key] === void 0) process.env[key] = value;
 }
 //#endregion
 //#region src/hooks/_env.ts
-hydrateProcessEnvFromFile();
+hydrateProcessEnvFromFile(["AGENTMEMORY_SECRET"]);
 //#endregion
 //#region src/hooks/_project.ts
 function resolveProject(cwd) {
@@ -75,14 +76,10 @@ function isSdkChildContext(payload) {
 	if (!payload || typeof payload !== "object") return false;
 	return payload.entrypoint === "sdk-ts";
 }
-const REST_URL = process.env["AGENTMEMORY_URL"] || "http://localhost:3111";
-const SECRET = process.env["AGENTMEMORY_SECRET"] || "";
-function authHeaders() {
-	const h = { "Content-Type": "application/json" };
-	if (SECRET) h["Authorization"] = `Bearer ${SECRET}`;
-	return h;
-}
+const OBSERVE_TIMEOUT_MS = 2e3;
+const EXIT_CAP_MS = 2500;
 async function main() {
+	if (isDrainChild()) return runDrainChild();
 	let input = "";
 	for await (const chunk of process.stdin) input += chunk;
 	let data;
@@ -95,26 +92,21 @@ async function main() {
 	if (isSdkChildContext(data)) return;
 	const sessionId = data.session_id || data.sessionId || data.conversation_id || "unknown";
 	const cwd = hookCwd(data) || process.cwd();
-	fetch(`${REST_URL}/agentmemory/observe`, {
-		method: "POST",
-		headers: authHeaders(),
-		body: JSON.stringify({
-			hookType: "task_completed",
-			sessionId,
-			project: resolveProject(cwd),
-			cwd,
-			timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-			data: {
-				task_id: data.task_id,
-				task_subject: data.task_subject,
-				task_description: typeof data.task_description === "string" ? data.task_description.slice(0, 2e3) : "",
-				teammate_name: data.teammate_name,
-				team_name: data.team_name
-			}
-		}),
-		signal: AbortSignal.timeout(2e3)
-	}).catch(() => {});
-	setTimeout(() => process.exit(0), 500).unref();
+	captureObservation(withEventId({
+		hookType: "task_completed",
+		sessionId,
+		project: resolveProject(cwd),
+		cwd,
+		timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+		data: {
+			task_id: data.task_id,
+			task_subject: data.task_subject,
+			task_description: typeof data.task_description === "string" ? data.task_description.slice(0, 2e3) : "",
+			teammate_name: data.teammate_name,
+			team_name: data.team_name
+		}
+	}, data), OBSERVE_TIMEOUT_MS);
+	setTimeout(() => process.exit(0), EXIT_CAP_MS).unref();
 }
 main().catch(() => process.exit(0));
 //#endregion

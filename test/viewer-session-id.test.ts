@@ -53,13 +53,12 @@ function loadViewerSandbox() {
       setAttribute: (name: string, value: unknown) => {
         attributes.set(name, String(value));
       },
-      // Added in #313 — switchTab toggles aria-selected via removeAttribute
-      // on the non-active tab buttons. The mock previously only had
-      // get/setAttribute, so the new hash-routing path threw TypeError.
       removeAttribute: (name: string) => {
         attributes.delete(name);
       },
       querySelectorAll: () => [],
+      querySelector: () => null,
+      closest: () => null,
     };
   };
   const getElement = (id: string) => {
@@ -69,23 +68,24 @@ function loadViewerSandbox() {
 
   const tabs = [
     "dashboard",
-    "graph",
     "memories",
-    "timeline",
-    "sessions",
     "lessons",
-    "actions",
     "crystals",
-    "audit",
+    "graph",
+    "sessions",
+    "timeline",
+    "actions",
+    "replay",
     "activity",
     "profile",
-    "replay",
+    "health",
+    "audit",
   ];
   const tabButtons = tabs.map((tab) => ({ ...createMockElement(), dataset: { tab } }));
   const views = tabs.map((tab) => ({ ...createMockElement(`view-${tab}`), id: `view-${tab}` }));
   const checkboxes = [createMockElement(), createMockElement()].map((el) => ({ ...el, checked: false }));
   const querySelectorAll = (selector: string) => {
-    if (selector === ".tab-bar button") return tabButtons;
+    if (selector === ".tab-bar button[data-tab]") return tabButtons;
     if (selector === ".view") return views;
     if (selector === 'input[type="checkbox"]') return checkboxes;
     return [];
@@ -93,6 +93,7 @@ function loadViewerSandbox() {
 
   const document = {
     documentElement: { dataset: {} },
+    body: createMockElement("body"),
     createElement: () => {
       let text = "";
       return {
@@ -124,10 +125,6 @@ function loadViewerSandbox() {
       matchMedia: () => ({ matches: false }),
       addEventListener: () => {},
     },
-    // Stubbed in #313 — the viewer now calls history.replaceState
-    // inside updateTabRoute → switchTab to drive the hash-route surface.
-    // The vm sandbox is otherwise zero-globals so the call would
-    // throw ReferenceError. No-op is fine for the rendering tests.
     history: { replaceState: () => {}, pushState: () => {} },
     location: {
       hash: "",
@@ -153,6 +150,8 @@ function loadViewerSandbox() {
     setTimeout: () => 0,
     clearTimeout: () => {},
     URLSearchParams,
+    AbortController,
+    AbortSignal,
     Date,
     Math,
     Promise,
@@ -165,10 +164,7 @@ function loadViewerSandbox() {
     encodeURIComponent,
   };
 
-  const scriptWithoutAutoStart = scriptMatch[1].replace(
-    /\n    switchTab\(tabFromRoute\(\), \{ replaceRoute: true \}\);\n    \/\/ Resolve[\s\S]*?\n    startDashboardAutoRefresh\(\);/,
-    "\n",
-  );
+  const scriptWithoutAutoStart = scriptMatch[1].split("    var bootRoute = parseRoute(window.location.hash);")[0];
   expect(scriptWithoutAutoStart).not.toBe(scriptMatch[1]);
 
   vm.createContext(sandbox);
@@ -177,101 +173,70 @@ function loadViewerSandbox() {
   return { sandbox, getElement };
 }
 
-const DASHBOARD_PATHS = [
-  "/agentmemory/health",
-  "/agentmemory/sessions",
-  "/agentmemory/memories",
-  "/agentmemory/graph/stats",
-  "/agentmemory/audit",
-] as const;
-
 describe("viewer session rendering", () => {
-  it("deduplicates dashboard loads and fetches every endpoint serially", async () => {
+  it("shares concurrent bounded session loads", async () => {
     const { sandbox } = loadViewerSandbox();
-    let active = 0;
-    let maxActive = 0;
-    const paths: string[] = [];
+    const requests: string[] = [];
+    sandbox.openBootGate();
     sandbox.fetch = async (url: string) => {
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      paths.push(new URL(url).pathname);
-      await Promise.resolve();
-      active -= 1;
-      return { ok: true, json: async () => ({}) };
+      requests.push(url);
+      return { ok: true, json: async () => ({ sessions: [{ id: "ses_loaded" }] }) };
     };
 
-    await Promise.all([sandbox.loadDashboard(), sandbox.loadDashboard()]);
+    await Promise.all([sandbox.ensureLoaded("session"), sandbox.ensureLoaded("session")]);
 
-    expect(maxActive).toBe(1);
-    expect(paths).toEqual(DASHBOARD_PATHS);
+    expect(requests).toHaveLength(1);
+    const request = new URL(requests[0]);
+    expect(request.pathname).toBe("/agentmemory/sessions");
+    expect(request.searchParams.get("limit")).toBe("100");
+    expect(Object.keys(sandbox.store.entities.session)).toEqual(["ses_loaded"]);
   });
 
-  it("runs one pending refresh after an in-flight dashboard load", async () => {
+  it("keeps a streamed session update received during its initial load", async () => {
     const { sandbox } = loadViewerSandbox();
-    const paths: string[] = [];
-    let active = 0;
-    let maxActive = 0;
-    let releaseSessions = () => {
-      throw new Error("sessions request did not start");
-    };
-    let sessionsStarted = false;
-    sandbox.fetch = async (url: string) => {
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      paths.push(new URL(url).pathname);
-      if (paths.length === 2) {
-        await new Promise<void>((resolve) => {
-          releaseSessions = resolve;
-          sessionsStarted = true;
-        });
-      }
-      active -= 1;
-      return { ok: true, json: async () => ({}) };
-    };
+    sandbox.openBootGate();
+    let completeResponse: ((value: { sessions: Array<{ id: string; status: string }> }) => void) | undefined;
+    sandbox.fetch = async () => ({
+      ok: true,
+      json: () => new Promise((resolve) => { completeResponse = resolve; }),
+    });
+    const load = sandbox.ensureLoaded("session");
+    await vi.waitFor(() => expect(completeResponse).toBeDefined());
+    sandbox.handleLiveEvent("session.updated", { session: { id: "ses_live", status: "completed" } });
+    if (!completeResponse) throw new Error("session request did not start");
+    completeResponse({ sessions: [{ id: "ses_live", status: "active" }] });
+    await load;
 
-    const initialLoad = sandbox.loadDashboard();
-    await vi.waitFor(() => expect(sessionsStarted).toBe(true), { timeout: 1000 });
-    const pendingRefresh = sandbox.refreshDashboard();
-    releaseSessions();
-    await pendingRefresh;
-    const pathsWhenRefreshResolved = paths.slice();
-    await initialLoad;
-
-    expect(maxActive).toBe(1);
-    expect(pathsWhenRefreshResolved).toEqual([...DASHBOARD_PATHS, ...DASHBOARD_PATHS]);
-    expect(paths).toEqual([...DASHBOARD_PATHS, ...DASHBOARD_PATHS]);
+    expect(sandbox.store.entities.session.ses_live.status).toBe("completed");
+    expect(sandbox.store.loaded.session).toBe(true);
   });
 
-  it("starts a fresh dashboard cycle after a failed load", async () => {
+  it("retries a failed entity load on the next request", async () => {
     const { sandbox } = loadViewerSandbox();
-    const getElementById = sandbox.document.getElementById;
-    sandbox.document.getElementById = () => null;
+    sandbox.openBootGate();
+    sandbox.fetch = async () => { throw new Error("connection lost"); };
+    await sandbox.ensureLoaded("session");
+    expect(sandbox.store.loaded.session).not.toBe(true);
+    sandbox.fetch = async () => ({ ok: true, json: async () => ({ sessions: [{ id: "ses_recovered" }] }) });
 
-    await expect(sandbox.loadDashboard()).rejects.toThrow();
+    await sandbox.ensureLoaded("session");
 
-    sandbox.document.getElementById = getElementById;
-    const paths: string[] = [];
-    sandbox.fetch = async (url: string) => {
-      paths.push(new URL(url).pathname);
-      return { ok: true, json: async () => ({}) };
-    };
-    await sandbox.loadDashboard();
-
-    expect(paths).toEqual(DASHBOARD_PATHS);
+    expect(Object.keys(sandbox.store.entities.session)).toEqual(["ses_recovered"]);
+    expect(sandbox.store.loaded.session).toBe(true);
   });
 
-  it("marks lesson and crystal counts as deferred", () => {
+  it("renders snapshot counts without reading lesson and crystal collections", () => {
     const { sandbox, getElement } = loadViewerSandbox();
+    sandbox.fetch = vi.fn();
+    sandbox.store.snapshot = { version: "1" };
+    sandbox.store.counts = { lessons: 27, crystals: 13 };
 
     sandbox.renderDashboard();
 
-    const html = getElement("view-dashboard").innerHTML;
-    expect(html).toContain(
-      '<div class="label">Lessons</div><div class="value">&mdash;</div><div class="sub">load tab to view</div>',
-    );
-    expect(html).toContain(
-      '<div class="label">Crystals</div><div class="value">&mdash;</div><div class="sub">load tab to view</div>',
-    );
+    expect(sandbox.fetch).not.toHaveBeenCalled();
+    const html: string = getElement("view-dashboard").innerHTML;
+    expect(html.match(/data-tab="lessons"[^]*?<div class="value">(\d+)<\/div>/)?.[1]).toBe("27");
+    expect(html.match(/data-tab="crystals"[^]*?<div class="value">(\d+)<\/div>/)?.[1]).toBe("13");
   });
 
   it("attaches the saved viewer bearer to API calls", async () => {
@@ -303,35 +268,31 @@ describe("viewer session rendering", () => {
     expect(prompt.innerHTML).not.toContain("/data/.hmac");
   });
 
-  it("does not throw when dashboard sessions are missing ids", () => {
+  it("drops sessions without an id instead of throwing, and renders the rest", () => {
     const { sandbox, getElement } = loadViewerSandbox();
-    sandbox.state.dashboard = {
-      loaded: true,
-      health: { status: "healthy", health: {} },
-      sessions: [{ status: "active", observationCount: 3, startedAt: "2026-05-13T12:00:00Z" }],
-      memories: [],
-      graphStats: null,
-      recentAudit: [],
-      lessons: [],
-      crystals: [],
-    };
+    sandbox.store.snapshot = { version: "1" };
+    sandbox.store.counts = { sessions: 2, activeSessions: 2, memories: 0, latestMemories: 0 };
+    sandbox.replaceBucket("session", [
+      { status: "active", observationCount: 3, startedAt: "2026-05-13T12:00:00Z" },
+      { id: "ses_ok", project: "/work/web-app", status: "active", observationCount: 2, startedAt: "2026-05-13T13:00:00Z" },
+    ]);
+    sandbox.store.loaded.session = true;
+    expect(Object.keys(sandbox.store.entities.session)).toEqual(["ses_ok"]);
 
     expect(() => sandbox.renderDashboard()).not.toThrow();
-    expect(getElement("view-dashboard").innerHTML).toContain("Unknown session");
+    expect(getElement("view-dashboard").innerHTML).toContain("web-app");
   });
 
-  it("does not throw when timeline and sessions tabs receive sessions missing ids", () => {
+  it("renders sessions without a project, and switches tabs", () => {
     const { sandbox, getElement } = loadViewerSandbox();
-    const sessions = [{ status: "active", observationCount: 1, startedAt: "2026-05-13T12:00:00Z" }];
+    sandbox.store.snapshot = { version: "1" };
+    sandbox.replaceBucket("session", [{ id: "ses_no_project_123456", status: "active", observationCount: 1, startedAt: "2026-05-13T12:00:00Z" }]);
+    sandbox.store.loaded.session = true;
 
-    expect(() => sandbox.renderTimelineToolbar(sessions)).not.toThrow();
-    expect(getElement("view-timeline").innerHTML).toContain("Unknown session");
-
-    sandbox.state.sessions.items = sessions;
     expect(() => sandbox.renderSessions()).not.toThrow();
-    expect(getElement("view-sessions").innerHTML).toContain("Unknown session");
+    expect(getElement("session-list").innerHTML).toContain("123456");
 
-    const tabButtons = sandbox.document.querySelectorAll(".tab-bar button");
+    const tabButtons = sandbox.document.querySelectorAll(".tab-bar button[data-tab]");
     expect(tabButtons.length).toBeGreaterThan(0);
     expect(() => sandbox.switchTab("sessions")).not.toThrow();
     expect(tabButtons.some((button: any) => button.classList.contains("active"))).toBe(true);

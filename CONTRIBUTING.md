@@ -93,18 +93,17 @@ PRs with commits lacking sign-off will not merge.
 
 ## Release process
 
-Maintainers cut releases. Every bump touches these files in lockstep (the consistency tests fail if the trio of doc counts or any version drifts):
-
-1. `package.json`
-2. `src/version.ts`
-3. `plugin/.claude-plugin/plugin.json`
-4. `plugin/plugin.json`
-5. `plugin/.codex-plugin/plugin.json`
-6. `packages/mcp/package.json`
-7. `src/types.ts` (`ExportData.version` union)
-8. `src/functions/export-import.ts` (`supportedVersions` Set)
+Maintainers cut releases. To bump the version, change only `package.json`, then run `npm run docs:sync`. It carries the new version into `src/version.ts`, the `ExportData.version` union in `src/types.ts`, the `supportedVersions` set in `src/functions/export-import.ts`, every plugin and package manifest that shared the old version, the deploy templates, the AGENTS.md stats heading, and CHANGELOG.md (the Unreleased section becomes the new version with today's date and its compare link). Commit everything it changes, and check with `npm run docs:check`.
 
 No lockfiles are committed. `test/export-import.test.ts` asserts against the `VERSION` constant, so it needs no per-release edit. Run `npm run skills:gen` if the endpoint or env surface changed.
+
+Before publishing, run the release gate on the release commit:
+
+```bash
+npm run release:gate
+```
+
+It builds, packs `@agentmemory/agentmemory` and `@agentmemory/mcp`, installs both tarballs into a fresh prefix with a clean `HOME`, starts the installed CLI on random free ports with a deterministic local embedding server (no API keys), and checks capture through the bundled hooks, offline capture and spool recovery, replay dedup after a force kill, dead letters across a restart, vector survival before the first checkpoint, `agentmemory stop` then start, export and import into a fresh home, the MCP entrypoints, and the viewer plus `/agentmemory/status`. It prints a pass or fail line per scenario and a JSON summary, writes logs and `summary.json` to the output directory it prints, and stops only the processes it started. To gate the exact file you will publish, pass it in: `npm pack` then `npm run release:gate -- --tarball agentmemory-agentmemory-<version>.tgz`, and publish that tarball. Do not publish when a scenario fails. The `Release gate` workflow runs the same script on Ubuntu and macOS for pull requests and pushes to main.
 
 Then: CHANGELOG section, PR, merge, tag, GitHub release. The `Publish to npm` workflow picks up the release trigger and publishes `@agentmemory/agentmemory`, `@agentmemory/mcp`, and `@agentmemory/fs-watcher` to npm with provenance (`@agentmemory/fs-watcher` versions independently from `integrations/filesystem-watcher/package.json`).
 

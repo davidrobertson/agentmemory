@@ -18,7 +18,7 @@ function installFetch(handler: (url: string, init?: RequestInit) => Response): F
 
 const BASE = "http://localhost:3111";
 
-describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
+describe("@agentmemory/mcp standalone — server proxy", () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
@@ -104,7 +104,7 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
     expect(rememberBody?.["project"]).toBe("agentmemory");
   });
 
-  it("proxies memory_recall to POST /agentmemory/search and forwards format/token_budget (#507)", async () => {
+  it("proxies memory_recall to POST /agentmemory/search and forwards format/token_budget", async () => {
     const calls: Array<{ url: string; body?: unknown }> = [];
     installFetch((url, init) => {
       if (url.endsWith("/agentmemory/livez")) return new Response("ok", { status: 200 });
@@ -144,7 +144,7 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
     expect(calls.find((c) => c.url.endsWith("/agentmemory/smart-search"))).toBeUndefined();
   });
 
-  it("memory_recall defaults format to 'full' when omitted (#507)", async () => {
+  it("memory_recall defaults format to 'full' when omitted", async () => {
     let recallBody: Record<string, unknown> | undefined;
     installFetch((url, init) => {
       if (url.endsWith("/agentmemory/livez")) return new Response("ok", { status: 200 });
@@ -312,7 +312,48 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
     expect(probeCount).toBe(2);
   });
 
-  it("forwards non-essential tools to /agentmemory/mcp/call (#234)", async () => {
+  it("surfaces the export refusal body on a 413 instead of falling back to local KV", async () => {
+    let probeCount = 0;
+    const refusal = {
+      success: false,
+      error: "Response is 20.0 MiB, over the ~15 MiB engine transport frame limit; narrow the range",
+      oversized: true,
+      bytes: 20 * 1024 * 1024,
+      limitBytes: 15 * 1024 * 1024,
+    };
+    installFetch((url) => {
+      if (url.endsWith("/agentmemory/livez")) {
+        probeCount++;
+        return new Response("ok", { status: 200 });
+      }
+      if (url.endsWith("/agentmemory/export")) {
+        return new Response(JSON.stringify(refusal), {
+          status: 413,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/agentmemory/sessions")) {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const res = await handleToolCall("memory_export", {});
+    const body = JSON.parse(res.content[0].text);
+    expect(body.oversized).toBe(true);
+    expect(body.success).toBe(false);
+    expect(body.bytes).toBe(refusal.bytes);
+
+    expect(probeCount).toBe(1);
+    const sessionsRes = await handleToolCall("memory_sessions", { limit: 5 });
+    expect(JSON.parse(sessionsRes.content[0].text).sessions).toEqual([]);
+    expect(probeCount).toBe(1);
+  });
+
+  it("forwards non-essential tools to /agentmemory/mcp/call", async () => {
     const calls: Array<{ url: string; body?: unknown }> = [];
     installFetch((url, init) => {
       if (url.endsWith("/agentmemory/livez")) {
@@ -423,7 +464,7 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
     expect(joined).toMatch(/ECONNREFUSED 127\.0\.0\.1:3111/);
   });
 
-  it("local fallback tools/list returns all 7 IMPLEMENTED_TOOLS regardless of AGENTMEMORY_TOOLS env (#234)", async () => {
+  it("local fallback tools/list returns all 7 IMPLEMENTED_TOOLS regardless of AGENTMEMORY_TOOLS env", async () => {
     const { handleToolsList } = await import("../src/mcp/standalone.js");
     delete process.env["AGENTMEMORY_URL"];
     delete process.env["AGENTMEMORY_TOOLS"];

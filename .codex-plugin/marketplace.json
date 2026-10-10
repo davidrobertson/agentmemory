@@ -10,13 +10,13 @@
         "source": "git-subdir",
         "url": "https://github.com/davidrobertson/agentmemory.git",
         "path": "./plugin",
-        "ref": "v0.9.28-codex.2"
+        "ref": "v0.9.30-codex.1"
       },
       "policy": {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "category": "Memory"
+      "category": "Developer Tools"
     }
   ]
 }

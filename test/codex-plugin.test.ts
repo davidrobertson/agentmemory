@@ -81,18 +81,14 @@ describe("Codex plugin manifest (developers.openai.com/codex/plugins)", () => {
       >;
     }>(join(pluginRoot, ".mcp.json"));
 
-    // env interpolation must include defaults so Claude Code (and
-    // any other MCP host that fails parse on unset ${VAR}) doesn't drop
-    // the server silently when the user hasn't exported the var.
-    expect(mcp.mcpServers.agentmemory?.env?.AGENTMEMORY_URL).toMatch(
-      /\$\{AGENTMEMORY_URL:-/,
-    );
-    expect(mcp.mcpServers.agentmemory?.env?.AGENTMEMORY_SECRET).toMatch(
-      /\$\{AGENTMEMORY_SECRET:-/,
-    );
+    expect(mcp.mcpServers.agentmemory?.env).toBeUndefined();
+    expect(mcp.mcpServers.agentmemory?.command).toBe("node");
+    expect(mcp.mcpServers.agentmemory?.args).toEqual([
+      "${CLAUDE_PLUGIN_ROOT}/scripts/plugin-bridge.mjs",
+    ]);
   });
 
-  it("runs the bundled AgentMemory MCP build from any install path", () => {
+  it("resolves the daemon bridge from the plugin root", () => {
     const mcp = readJson<{
       mcpServers: {
         agentmemory: { cwd?: string; command: string; args: string[] };
@@ -101,11 +97,10 @@ describe("Codex plugin manifest (developers.openai.com/codex/plugins)", () => {
     const server = mcp.mcpServers.agentmemory;
 
     expect(server).toEqual(expect.objectContaining({
-      cwd: ".",
       command: "node",
-      args: ["./dist/standalone.mjs"],
+      args: ["${CLAUDE_PLUGIN_ROOT}/scripts/plugin-bridge.mjs"],
     }));
-    expect(existsSync(join(pluginRoot, server.args[0]))).toBe(true);
+    expect(existsSync(server.args[0].replace("${CLAUDE_PLUGIN_ROOT}", pluginRoot))).toBe(true);
   });
 
   it("hooks.codex.json contains only events Codex supports (no Subagent / SessionEnd / Notification / TaskCompleted / PostToolUseFailure)", () => {
@@ -171,6 +166,7 @@ describe("Codex marketplace.json (.codex-plugin/marketplace.json at repo root)",
     expect(entry.source.source).toBe("git-subdir");
     expect(entry.source.path).toBe("./plugin");
     expect(entry.source.url).toBe("https://github.com/davidrobertson/agentmemory.git");
-    expect(entry.source.ref).toBe("v0.9.28-codex.2");
+    const version = readJson<{ version: string }>(join(repoRoot, "package.json")).version;
+    expect(entry.source.ref).toBe(`v${version}`);
   });
 });

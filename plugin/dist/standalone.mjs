@@ -47,6 +47,13 @@ var InMemoryKV = class {
 };
 //#endregion
 //#region src/mcp/transport.ts
+var JsonRpcError = class extends Error {
+	constructor(code, message) {
+		super(message);
+		this.code = code;
+		this.name = "JsonRpcError";
+	}
+};
 function isNotification(req) {
 	return req.id === void 0 || req.id === null;
 }
@@ -112,7 +119,7 @@ async function processLine(line, handler, writeOut, writeErr = (msg) => process.
 			jsonrpc: "2.0",
 			id: request.id,
 			error: {
-				code: -32603,
+				code: err instanceof JsonRpcError ? err.code : -32603,
 				message: err instanceof Error ? err.message : String(err)
 			}
 		});
@@ -315,10 +322,16 @@ const CORE_TOOLS = [
 		description: "Detect recurring patterns across sessions.",
 		inputSchema: {
 			type: "object",
-			properties: { project: {
-				type: "string",
-				description: "Project path to analyze"
-			} }
+			properties: {
+				project: {
+					type: "string",
+					description: "Project path to analyze"
+				},
+				limit: {
+					type: "integer",
+					description: "Most recent sessions to scan (default 50, max 500)"
+				}
+			}
 		}
 	},
 	{
@@ -1370,10 +1383,76 @@ function getStandalonePersistPath() {
 }
 //#endregion
 //#region src/version.ts
-const VERSION = "0.9.29-codex.1";
+const VERSION = "0.9.30-codex.1";
 createRequire(import.meta.url);
 //#endregion
 //#region src/state/schema.ts
+const KV = {
+	sessions: "mem:sessions",
+	observations: (sessionId) => `mem:obs:${sessionId}`,
+	memories: "mem:memories",
+	summaries: "mem:summaries",
+	config: "mem:config",
+	metrics: "mem:metrics",
+	health: "mem:health",
+	embeddings: (obsId) => `mem:emb:${obsId}`,
+	bm25Index: "mem:index:bm25",
+	vectorPendingLog: "mem:index:vec-pending",
+	relations: "mem:relations",
+	profiles: "mem:profiles",
+	claudeBridge: "mem:claude-bridge",
+	graphNodes: "mem:graph:nodes",
+	graphEdges: "mem:graph:edges",
+	graphSnapshot: "mem:graph:snapshot",
+	graphNameIndex: "mem:graph:name-index",
+	graphEdgeKey: "mem:graph:edge-key",
+	graphNodeDegree: "mem:graph:node-degree",
+	graphNameShards: "mem:graph:name-shards",
+	graphAdjacency: "mem:graph:adjacency",
+	graphObsNodes: "mem:graph:obs-nodes",
+	graphObservationState: (shard) => `mem:graph:obs-state:v1:${shard}`,
+	graphBatchState: (shard) => `mem:graph:batch-state:v1:${shard}`,
+	graphIndexMeta: "mem:graph:index-meta",
+	semantic: "mem:semantic",
+	procedural: "mem:procedural",
+	teamShared: (teamId) => `mem:team:${teamId}:shared`,
+	teamUsers: (teamId, userId) => `mem:team:${teamId}:users:${userId}`,
+	teamProfile: (teamId) => `mem:team:${teamId}:profile`,
+	audit: "mem:audit",
+	auditMonth: (month) => `mem:audit:${month}`,
+	auditMonths: "mem:audit:months",
+	actions: "mem:actions",
+	actionEdges: "mem:action-edges",
+	leases: "mem:leases",
+	routines: "mem:routines",
+	routineRuns: "mem:routine-runs",
+	signals: "mem:signals",
+	checkpoints: "mem:checkpoints",
+	mesh: "mem:mesh",
+	sketches: "mem:sketches",
+	facets: "mem:facets",
+	sentinels: "mem:sentinels",
+	crystals: "mem:crystals",
+	lessons: "mem:lessons",
+	insights: "mem:insights",
+	graphEdgeHistory: "mem:graph:edge-history",
+	enrichedChunks: (sessionId) => `mem:enriched:${sessionId}`,
+	latentEmbeddings: (obsId) => `mem:latent:${obsId}`,
+	retentionScores: "mem:retention",
+	accessLog: "mem:access",
+	imageRefs: "mem:image-refs",
+	imageEmbeddings: "mem:image-embeddings",
+	slots: "mem:slots",
+	globalSlots: "mem:slots:global",
+	state: "mem:state",
+	commits: "mem:commits",
+	recentSearches: "mem:recent-searches",
+	projectSessionsIndex: "mem:idx:project-sessions",
+	obsSessionIndex: (shard) => `mem:idx:obs:${shard}`,
+	captureInbox: "mem:capture:inbox",
+	captureEvents: (shard) => `mem:capture:events:${shard}`,
+	capturePrompts: "mem:capture:prompts"
+};
 function generateId(prefix) {
 	return `${prefix}_${Date.now().toString(36)}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
@@ -1395,9 +1474,151 @@ function isSession(value) {
 	return isNonEmptyString(value["id"]) && isNonEmptyString(value["project"]) && isNonEmptyString(value["cwd"]) && isNonEmptyString(value["startedAt"]) && (status === "active" || status === "completed" || status === "abandoned") && typeof value["observationCount"] === "number" && Number.isFinite(value["observationCount"]) && isOptionalString(value["endedAt"]) && isOptionalString(value["model"]) && isOptionalStringArray(value["tags"]) && isOptionalString(value["firstPrompt"]) && isOptionalString(value["summary"]) && isOptionalStringArray(value["commitShas"]) && isOptionalString(value["agentId"]);
 }
 function selectSessions(rows, limit) {
-	const sessions = rows.filter(isSession).sort((left, right) => right.startedAt.localeCompare(left.startedAt) || left.id.localeCompare(right.id));
+	const sessions = rows.filter(isSession).sort((left, right) => right.startedAt.localeCompare(left.startedAt) || right.id.localeCompare(left.id));
 	if (limit === void 0) return sessions;
 	return sessions.slice(0, Math.max(0, Math.min(100, Math.floor(limit))));
+}
+process.env["AGENTMEMORY_VERBOSE"] === "1" || process.env["AGENTMEMORY_VERBOSE"];
+KV.auditMonths;
+const AUDIT_MIGRATION_STATE_KEY = "migration";
+async function readAuditMigrationState(kv) {
+	return kv.get(KV.auditMonths, AUDIT_MIGRATION_STATE_KEY);
+}
+function monthStartMs(month) {
+	const [year, mon] = month.split("-").map(Number);
+	return Date.UTC(year, mon - 1, 1);
+}
+function monthEndMs(month) {
+	const [year, mon] = month.split("-").map(Number);
+	return Date.UTC(year, mon, 1) - 1;
+}
+async function readAuditMonthIndex(kv) {
+	return (await kv.get(KV.auditMonths, "index"))?.months ?? [];
+}
+async function listAuditMonthsDesc(kv) {
+	return [...await readAuditMonthIndex(kv)].sort().reverse();
+}
+async function queryAudit(kv, filter) {
+	const limit = filter?.limit || 100;
+	let fromMs;
+	if (filter?.dateFrom) {
+		fromMs = new Date(filter.dateFrom).getTime();
+		if (Number.isNaN(fromMs)) throw new Error(`Invalid dateFrom: ${filter.dateFrom}`);
+	}
+	const query = filter?.query?.trim().toLowerCase();
+	let toMs;
+	if (filter?.dateTo) {
+		toMs = new Date(filter.dateTo).getTime();
+		if (Number.isNaN(toMs)) throw new Error(`Invalid dateTo: ${filter.dateTo}`);
+	}
+	const matches = (entry) => {
+		if (filter?.operation && entry.operation !== filter.operation) return false;
+		const t = new Date(entry.timestamp).getTime();
+		if (fromMs !== void 0 && t < fromMs) return false;
+		if (toMs !== void 0 && t > toMs) return false;
+		if (query && ![entry.functionId, ...entry.targetIds || []].some((v) => String(v || "").toLowerCase().includes(query))) return false;
+		return true;
+	};
+	const seenIds = /* @__PURE__ */ new Set();
+	const collected = [];
+	const addIfNew = (row) => {
+		if (seenIds.has(row.id)) return;
+		seenIds.add(row.id);
+		if (matches(row)) collected.push(row);
+	};
+	const months = await listAuditMonthsDesc(kv);
+	for (const month of months) {
+		if (collected.length >= limit) break;
+		if (toMs !== void 0 && monthStartMs(month) > toMs) continue;
+		if (fromMs !== void 0 && monthEndMs(month) < fromMs) break;
+		const rows = await kv.list(KV.auditMonth(month));
+		for (const row of rows) addIfNew(row);
+	}
+	let legacyFrozen = false;
+	let legacyFrozenBytes;
+	if (collected.length < limit) {
+		const migrationState = await readAuditMigrationState(kv);
+		if (migrationState?.safeToListLegacy) {
+			const legacyRows = await kv.list(KV.audit);
+			for (const row of legacyRows) addIfNew(row);
+		} else if (migrationState?.status === "too-large" || migrationState?.status === "unreadable") {
+			legacyFrozen = true;
+			legacyFrozenBytes = migrationState.legacySizeBytes;
+		}
+	}
+	collected.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+	return {
+		entries: collected.slice(0, limit),
+		legacyFrozen,
+		legacyFrozenBytes
+	};
+}
+//#endregion
+//#region src/secret-store.ts
+const SECRET_KEY = "AGENTMEMORY_SECRET";
+function agentmemoryHomeDir() {
+	return join(homedir(), ".agentmemory");
+}
+function secretFilePath() {
+	return join(agentmemoryHomeDir(), "secret");
+}
+function usable(value) {
+	if (typeof value !== "string") return "";
+	const trimmed = value.trim();
+	if (!trimmed) return "";
+	if (trimmed.startsWith("${") && trimmed.endsWith("}")) return "";
+	return trimmed;
+}
+function unquote(value) {
+	const quote = value[0];
+	if ((quote === "\"" || quote === "'") && value.length > 1) {
+		const close = value.indexOf(quote, 1);
+		if (close !== -1) return value.slice(1, close);
+	}
+	const hash = value.indexOf(" #");
+	return hash === -1 ? value : value.slice(0, hash).trim();
+}
+function readEnvFileSecret(env = process.env) {
+	let content;
+	try {
+		content = readFileSync(join(env["AGENTMEMORY_DATA_DIR"]?.trim() || agentmemoryHomeDir(), ".env"), "utf-8");
+	} catch {
+		return "";
+	}
+	if (typeof content !== "string") return "";
+	let found = "";
+	for (const line of content.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed.startsWith("#")) continue;
+		const eq = trimmed.indexOf("=");
+		if (eq === -1) continue;
+		if (trimmed.slice(0, eq).replace(/^export\s+/, "").trim() !== SECRET_KEY) continue;
+		found = usable(unquote(trimmed.slice(eq + 1).trim()));
+	}
+	return found;
+}
+function readStoredSecret() {
+	try {
+		return usable(readFileSync(secretFilePath(), "utf-8"));
+	} catch {
+		return "";
+	}
+}
+function isLoopbackUrl(url) {
+	let hostname;
+	try {
+		hostname = new URL(url).hostname.toLowerCase();
+	} catch {
+		return false;
+	}
+	const bare = hostname.replace(/^\[|\]$/g, "");
+	return bare === "localhost" || bare === "::1" || /^127(?:\.\d{1,3}){3}$/.test(bare);
+}
+function resolveClientSecret(baseUrl, env = process.env) {
+	const fromEnv = usable(env[SECRET_KEY]);
+	if (fromEnv) return fromEnv;
+	if (!isLoopbackUrl(baseUrl)) return "";
+	return readEnvFileSecret(env) || readStoredSecret();
 }
 //#endregion
 //#region src/mcp/rest-proxy.ts
@@ -1415,22 +1636,26 @@ function forceProxy() {
 	const raw = process.env["AGENTMEMORY_FORCE_PROXY"];
 	return raw === "1" || raw === "true";
 }
+var ProxyCallError = class extends Error {
+	status;
+	body;
+	constructor(message, status, body) {
+		super(message);
+		this.name = "ProxyCallError";
+		this.status = status;
+		this.body = body;
+	}
+};
 let cached = null;
 let cachedAt = 0;
 let probeInFlight = null;
-function resolveEnvOrEmpty(name) {
-	const raw = process.env[name];
-	if (!raw) return "";
-	if (raw.startsWith("${") && raw.endsWith("}")) return "";
-	return raw;
-}
 function configuredBaseUrl() {
 	const raw = process.env["AGENTMEMORY_URL"];
 	if (!raw) return null;
 	return (raw.match(/^\$\{AGENTMEMORY_URL:-([^}]*)\}$/)?.[1] || (raw.startsWith("${") ? DEFAULT_URL : raw)).replace(/\/+$/, "");
 }
 function authHeader() {
-	const secret = resolveEnvOrEmpty("AGENTMEMORY_SECRET");
+	const secret = resolveClientSecret(configuredBaseUrl() ?? DEFAULT_URL);
 	return secret ? { authorization: `Bearer ${secret}` } : {};
 }
 const defaultLivezProbe = async (url, timeoutMs, headers) => {
@@ -1493,7 +1718,16 @@ async function resolveHandle() {
 					},
 					signal: AbortSignal.timeout(CALL_TIMEOUT_MS)
 				});
-				if (!res.ok) throw new Error(`${init?.method || "GET"} ${path} -> ${res.status} ${res.statusText}`);
+				if (!res.ok) {
+					const errText = await res.text().catch(() => "");
+					let errBody = void 0;
+					if (errText) try {
+						errBody = JSON.parse(errText);
+					} catch {
+						errBody = void 0;
+					}
+					throw new ProxyCallError(`${init?.method || "GET"} ${path} -> ${res.status} ${res.statusText}`, res.status, errBody);
+				}
 				const text = await res.text();
 				return text ? JSON.parse(text) : null;
 			}
@@ -1660,7 +1894,12 @@ async function handleProxy(v, handle) {
 				reason: v.reason
 			})
 		}));
-		case "memory_export": return textResponse(await handle.call("/agentmemory/export", { method: "GET" }), true);
+		case "memory_export": try {
+			return textResponse(await handle.call("/agentmemory/export", { method: "GET" }), true);
+		} catch (err) {
+			if (err instanceof ProxyCallError && err.body != null && typeof err.body === "object" && err.body.oversized === true) return textResponse(err.body, true);
+			throw err;
+		}
 		case "memory_audit": return textResponse(await handle.call(`/agentmemory/audit?limit=${v.limit}`, { method: "GET" }), true);
 		default: throw new Error(`Unknown tool: ${v.tool}`);
 	}
@@ -1732,11 +1971,7 @@ async function handleLocal(v, kvInstance) {
 			memories: await kvInstance.list("mem:memories"),
 			sessions: await kvInstance.list("mem:sessions")
 		}, true);
-		case "memory_audit": {
-			const entries = await kvInstance.list("mem:audit");
-			const limit = v.limit ?? 50;
-			return textResponse({ entries: entries.slice(0, limit) }, true);
-		}
+		case "memory_audit": return textResponse(await queryAudit(kvInstance, { limit: v.limit ?? 50 }), true);
 		default: throw new Error(`Unknown tool: ${v.tool}`);
 	}
 }

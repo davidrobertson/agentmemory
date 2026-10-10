@@ -106,7 +106,7 @@ describe("session listings", () => {
       standaloneKv,
     );
 
-    const expected = ["ses_latest", "ses_tie_a"];
+    const expected = ["ses_latest", "ses_tie_b"];
     expect(ids((apiResponse as { readonly body: unknown }).body)).toEqual(expected);
     expect(
       ids(JSON.parse((mcpResponse as { readonly body: { readonly content: Array<{ readonly text: string }> } }).body.content[0].text)),

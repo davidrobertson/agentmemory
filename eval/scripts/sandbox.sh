@@ -14,13 +14,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if ! command -v iii >/dev/null 2>&1; then
   echo "iii binary not on PATH. Install pinned version:"
-  echo "  curl -fsSL https://github.com/iii-hq/iii/releases/download/iii/v0.11.2/iii-aarch64-apple-darwin.tar.gz | tar -xz -C ~/.local/bin"
+  echo '  curl -fsSLo iii.tar.gz https://github.com/iii-hq/iii/releases/download/iii/v0.22.1/iii-aarch64-apple-darwin.tar.gz'
+  echo '  echo "2b309019b909a896cae874dc947e2cdf877b4f3c51dd026b79850af858517fa4  iii.tar.gz" | shasum -a 256 -c - && tar -xzf iii.tar.gz -C ~/.local/bin'
+  echo '  (other platforms: check the matching .sha256 file on the release page before extracting)'
   exit 1
 fi
 
 iii_ver=$(iii --version 2>&1 | head -1)
-if [[ "$iii_ver" != "0.11.2" ]]; then
-  echo "warning: iii version on PATH is $iii_ver; agentmemory pins 0.11.2"
+if [[ "$iii_ver" != "0.22.1" ]]; then
+  echo "warning: iii version on PATH is $iii_ver; agentmemory pins 0.22.1"
 fi
 
 if [[ ! -f "$REPO_ROOT/dist/index.mjs" ]]; then

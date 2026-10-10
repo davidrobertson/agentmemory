@@ -1,4 +1,4 @@
-import type { ISdk } from "iii-sdk";
+import type { IIIClient } from "iii-sdk";
 import type {
   GraphNode,
   GraphEdge,
@@ -8,12 +8,14 @@ import type {
   MemoryProvider,
 } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
+import { boundSources } from "./graph.js";
 import type { StateKV } from "../state/kv.js";
 import {
   indexGraphEdge,
   indexGraphNode,
   linkObservationsToNode,
 } from "../state/graph-indexes.js";
+import { withKeyedLock } from "../state/keyed-mutex.js";
 import { logger } from "../logger.js";
 
 const TEMPORAL_EXTRACTION_SYSTEM = `You are a temporal knowledge extraction engine. Given observations, extract entities AND their temporal relationships with full context metadata.
@@ -155,7 +157,7 @@ function parseTemporalGraphXml(
 }
 
 export function registerTemporalGraphFunctions(
-  sdk: ISdk,
+  sdk: IIIClient,
   kv: StateKV,
   provider: MemoryProvider,
 ): void {
@@ -191,79 +193,81 @@ export function registerTemporalGraphFunctions(
         const obsIds = data.observations.map((o) => o.id);
         const { nodes, edges } = parseTemporalGraphXml(response, obsIds);
 
-        const existingNodes = await kv.list<GraphNode>(KV.graphNodes);
-        const existingEdges = await kv.list<GraphEdge>(KV.graphEdges);
+        await withKeyedLock("graph:persist", async () => {
+          const existingNodes = await kv.list<GraphNode>(KV.graphNodes);
+          const existingEdges = await kv.list<GraphEdge>(KV.graphEdges);
 
-        const idRemap = new Map<string, string>();
-        for (const node of nodes) {
-          const existing = existingNodes.find(
-            (n) =>
-              n.name === node.name && n.type === node.type,
-          );
-          if (existing) {
-            const oldId = node.id;
-            const merged = {
-              ...existing,
-              sourceObservationIds: [
-                ...new Set([
-                  ...existing.sourceObservationIds,
-                  ...obsIds,
-                ]),
-              ],
-              properties: { ...existing.properties, ...node.properties },
-              updatedAt: new Date().toISOString(),
-              aliases: [
-                ...new Set([
-                  ...(existing.aliases || []),
-                  ...(node.aliases || []),
-                ]),
-              ],
-            };
-            if (merged.aliases.length === 0) delete (merged as any).aliases;
-            await kv.set(KV.graphNodes, existing.id, merged);
-            await linkObservationsToNode(kv, existing.id, obsIds);
-            node.id = existing.id;
-            idRemap.set(oldId, existing.id);
-          } else {
-            await kv.set(KV.graphNodes, node.id, node);
-            await indexGraphNode(kv, node);
-            existingNodes.push(node);
-          }
-        }
-
-        for (const edge of edges) {
-          if (idRemap.has(edge.sourceNodeId)) {
-            edge.sourceNodeId = idRemap.get(edge.sourceNodeId)!;
-          }
-          if (idRemap.has(edge.targetNodeId)) {
-            edge.targetNodeId = idRemap.get(edge.targetNodeId)!;
-          }
-          const existingKey = `${edge.sourceNodeId}|${edge.targetNodeId}|${edge.type}`;
-          const existingEdge = existingEdges.find(
-            (e) =>
-              `${e.sourceNodeId}|${e.targetNodeId}|${e.type}` ===
-              existingKey,
-          );
-
-          if (existingEdge) {
-            const updatedOld = {
-              ...existingEdge,
-              isLatest: false,
-              tvalidEnd:
-                existingEdge.tvalidEnd || new Date().toISOString(),
-              supersededBy: edge.id,
-            };
-            await kv.set(KV.graphEdges, existingEdge.id, updatedOld);
-
-            await kv.set(KV.graphEdgeHistory, existingEdge.id, updatedOld);
-
-            edge.version = (existingEdge.version || 1) + 1;
+          const idRemap = new Map<string, string>();
+          for (const node of nodes) {
+            const existing = existingNodes.find(
+              (n) =>
+                n.name === node.name && n.type === node.type,
+            );
+            if (existing) {
+              const oldId = node.id;
+              const merged = {
+                ...existing,
+                sourceObservationIds: boundSources(
+                  existing.sourceObservationIds ?? [],
+                  node.sourceObservationIds ?? [],
+                ),
+                properties: { ...existing.properties, ...node.properties },
+                updatedAt: new Date().toISOString(),
+                aliases: [
+                  ...new Set([
+                    ...(existing.aliases || []),
+                    ...(node.aliases || []),
+                  ]),
+                ],
+              };
+              if (merged.aliases.length === 0) delete (merged as any).aliases;
+              await kv.set(KV.graphNodes, existing.id, merged);
+              await linkObservationsToNode(kv, existing.id, obsIds);
+              node.id = existing.id;
+              idRemap.set(oldId, existing.id);
+            } else {
+              node.sourceObservationIds = boundSources([], node.sourceObservationIds ?? []);
+              await kv.set(KV.graphNodes, node.id, node);
+              await indexGraphNode(kv, node);
+              existingNodes.push(node);
+            }
           }
 
-          await kv.set(KV.graphEdges, edge.id, edge);
-          await indexGraphEdge(kv, edge);
-          existingEdges.push(edge);
-        }
+          for (const edge of edges) {
+            if (idRemap.has(edge.sourceNodeId)) {
+              edge.sourceNodeId = idRemap.get(edge.sourceNodeId)!;
+            }
+            if (idRemap.has(edge.targetNodeId)) {
+              edge.targetNodeId = idRemap.get(edge.targetNodeId)!;
+            }
+            const existingKey = `${edge.sourceNodeId}|${edge.targetNodeId}|${edge.type}`;
+            const existingEdge = existingEdges.find(
+              (e) =>
+                `${e.sourceNodeId}|${e.targetNodeId}|${e.type}` ===
+                existingKey,
+            );
+
+            if (existingEdge) {
+              const updatedOld = {
+                ...existingEdge,
+                isLatest: false,
+                tvalidEnd:
+                  existingEdge.tvalidEnd || new Date().toISOString(),
+                supersededBy: edge.id,
+              };
+              await kv.set(KV.graphEdges, existingEdge.id, updatedOld);
+
+              await kv.set(KV.graphEdgeHistory, existingEdge.id, updatedOld);
+
+              edge.version = (existingEdge.version || 1) + 1;
+            }
+
+            edge.sourceObservationIds = boundSources([], edge.sourceObservationIds ?? []);
+            await kv.set(KV.graphEdges, edge.id, edge);
+            await indexGraphEdge(kv, edge);
+            existingEdges.push(edge);
+          }
+        });
 
         logger.info("Temporal graph extraction complete", {
           nodes: nodes.length,

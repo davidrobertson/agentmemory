@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -88,7 +88,7 @@ describe("built capture hooks", () => {
     ["post-tool-use.mjs", { tool_name: "Read", tool_output: "done" }],
     ["post-tool-failure.mjs", { tool_name: "Read", error: "failed" }],
     ["session-start.mjs", {}],
-  ])("dispatches telemetry without waiting for the response: %s", async (script, payload) => {
+  ])("delivers telemetry within the bounded capture deadline: %s", async (script, payload) => {
     const paths: string[] = [];
     const server = http.createServer((_request, response) => {
       paths.push(_request.url ?? "");
@@ -106,7 +106,7 @@ describe("built capture hooks", () => {
         url: `http://127.0.0.1:${address.port}`,
       });
       expect(result.code).toBe(0);
-      expect(result.elapsed).toBeLessThan(1100);
+      expect(result.elapsed).toBeLessThan(script === "session-start.mjs" ? 1100 : 3500);
       expect(paths).toHaveLength(1);
     } finally {
       server.close();
@@ -114,7 +114,8 @@ describe("built capture hooks", () => {
     }
   });
 
-  it("does not wait for a stalled telemetry response", async () => {
+  it("spools a stalled observation before the bounded hook deadline", async () => {
+    const spoolDir = mkdtempSync(join(tmpdir(), "agentmemory-stalled-hook-"));
     const server = http.createServer(() => {});
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -126,12 +127,22 @@ describe("built capture hooks", () => {
         script: "prompt-submit.mjs",
         payload: { session_id: "timeout-test", cwd: process.cwd(), prompt: "timeout" },
         url: `http://127.0.0.1:${address.port}`,
+        env: { AGENTMEMORY_CAPTURE_SPOOL_DIR: spoolDir },
       });
       expect(result.code).toBe(0);
-      expect(result.elapsed).toBeLessThan(1100);
+      expect(result.elapsed).toBeLessThan(3500);
+      const records = readFileSync(join(spoolDir, `local-${address.port}.jsonl`), "utf8")
+        .trim().split("\n").map((line) => JSON.parse(line));
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        eventId: expect.stringMatching(/^evc_[0-9a-f]{32}$/),
+        body: { sessionId: "timeout-test", data: { prompt: "timeout" } },
+      });
     } finally {
+      server.closeAllConnections();
       server.close();
       await once(server, "close");
+      rmSync(spoolDir, { recursive: true, force: true });
     }
   });
 
