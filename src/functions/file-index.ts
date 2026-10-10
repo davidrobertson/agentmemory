@@ -1,10 +1,11 @@
 import type { IIIClient } from "iii-sdk";
-import type { CompressedObservation, Session } from "../types.js";
+import type { CompressedObservation } from "../types.js";
 import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { recordAudit } from "./audit.js";
 import { recordAccessBatch } from "./access-tracker.js";
 import { logger } from "../logger.js";
+import { selectSessions } from "../state/sessions.js";
 
 interface FileHistory {
   file: string;
@@ -44,19 +45,14 @@ export function registerFileIndexFunction(sdk: IIIClient, kv: StateKV): void {
       }
       const results: FileHistory[] = [];
 
-      const sessions = await kv.list<Session>(KV.sessions);
+      const sessions = selectSessions(await kv.list(KV.sessions));
       let otherSessions = sessionId
         ? sessions.filter((s) => s.id !== sessionId)
         : sessions;
       if (normalizedProject) {
         otherSessions = otherSessions.filter((s) => s.project === normalizedProject);
       }
-      otherSessions = otherSessions
-        .sort(
-          (a, b) =>
-            new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
-        )
-        .slice(0, 15);
+      otherSessions = otherSessions.slice(0, 15);
 
       const obsCache = new Map<string, CompressedObservation[]>();
       for (const session of otherSessions) {
