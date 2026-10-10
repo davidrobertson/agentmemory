@@ -1,6 +1,6 @@
 {
   "name": "@agentmemory/mcp",
-  "version": "0.9.30-codex.1",
+  "version": "0.9.30-codex.2",
   "description": "Standalone MCP server for agentmemory — thin shim that re-exposes @agentmemory/agentmemory's MCP entrypoint",
   "type": "module",
   "bin": {
@@ -28,7 +28,7 @@
   "homepage": "https://github.com/davidrobertson/agentmemory#readme",
   "bugs": "https://github.com/davidrobertson/agentmemory/issues",
   "dependencies": {
-    "@agentmemory/agentmemory": "0.9.30-codex.1"
+    "@agentmemory/agentmemory": "0.9.30-codex.2"
   },
   "publishConfig": {
     "access": "public",

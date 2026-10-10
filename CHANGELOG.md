@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-codex.2] — 2026-10-10
+
+- Keep hook captures and CLI drain records when the engine returns 404 during worker startup or shutdown. Retry them when the worker registers its routes.
+
 ## [0.9.30-codex.1] — 2026-10-10
 ## [0.9.30] - 2026-10-06
 
@@ -262,6 +266,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-codex.2]: https://github.com/davidrobertson/agentmemory/compare/v0.9.30-codex.1...v0.9.30-codex.2
 [0.9.30-codex.1]: https://github.com/davidrobertson/agentmemory/compare/v0.9.30...v0.9.30-codex.1
 [0.9.30]: https://github.com/rohitg00/agentmemory/compare/v0.9.29...v0.9.30
 [0.9.29]: https://github.com/rohitg00/agentmemory/compare/v0.9.28...v0.9.29
