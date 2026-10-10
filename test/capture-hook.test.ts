@@ -143,6 +143,20 @@ describe("hooks capture when the server is unavailable", () => {
     expect(spoolLines(dir, port)).toHaveLength(0);
   });
 
+  it("spools while the engine is reachable but the worker route is absent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "am-hook-restart-"));
+    const received: Array<Record<string, unknown>> = [];
+    const port = await startServer(404, received);
+    const result = await runHook("post-tool-use.mjs", toolPayload("worker-restarting", { tool_use_id: "restart-404" }), {
+      AGENTMEMORY_URL: `http://127.0.0.1:${port}`,
+      AGENTMEMORY_CAPTURE_SPOOL_DIR: dir,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(spoolLines(dir, port)).toEqual([
+      expect.objectContaining({ eventId: received[0]!.eventId, body: expect.objectContaining({ sessionId: "ses_hook_capture" }) }),
+    ]);
+  });
+
   it("keeps every record when many hooks spool at once", async () => {
     const dir = mkdtempSync(join(tmpdir(), "am-hook-spool-"));
     const port = await closedPort();

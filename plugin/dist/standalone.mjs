@@ -1383,7 +1383,7 @@ function getStandalonePersistPath() {
 }
 //#endregion
 //#region src/version.ts
-const VERSION = "0.9.30-codex.1";
+const VERSION = "0.9.30-codex.2";
 createRequire(import.meta.url);
 //#endregion
 //#region src/state/schema.ts

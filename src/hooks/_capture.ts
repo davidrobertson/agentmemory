@@ -55,7 +55,8 @@ export function withEventId(
 
 function classify(status: number): SendOutcome {
   if (status >= 200 && status < 300) return status === 200 ? "duplicate" : "delivered";
-  if (status === 408 || status === 429 || status >= 500) return "retry";
+  // The engine returns 404 while the worker is starting or shutting down.
+  if (status === 404 || status === 408 || status === 429 || status >= 500) return "retry";
   return "rejected";
 }
 

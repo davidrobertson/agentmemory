@@ -852,7 +852,7 @@ function withEventId(body, host, content, options = {}) {
 }
 function classify(status) {
 	if (status >= 200 && status < 300) return status === 200 ? "duplicate" : "delivered";
-	if (status === 408 || status === 429 || status >= 500) return "retry";
+	if (status === 404 || status === 408 || status === 429 || status >= 500) return "retry";
 	return "rejected";
 }
 async function post(body, timeoutMs) {
