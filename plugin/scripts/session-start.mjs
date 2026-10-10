@@ -63,10 +63,10 @@ function unquote(value) {
 	const hash = value.indexOf(" #");
 	return hash === -1 ? value : value.slice(0, hash).trim();
 }
-function readEnvFileSecret() {
+function readEnvFileSecret(env = process.env) {
 	let content;
 	try {
-		content = readFileSync(join(agentmemoryHomeDir(), ".env"), "utf-8");
+		content = readFileSync(join(env["AGENTMEMORY_DATA_DIR"]?.trim() || agentmemoryHomeDir(), ".env"), "utf-8");
 	} catch {
 		return "";
 	}
@@ -103,7 +103,7 @@ function resolveClientSecret(baseUrl, env = process.env) {
 	const fromEnv = usable(env[SECRET_KEY]);
 	if (fromEnv) return fromEnv;
 	if (!isLoopbackUrl(baseUrl)) return "";
-	return readEnvFileSecret() || readStoredSecret();
+	return readEnvFileSecret(env) || readStoredSecret();
 }
 //#endregion
 //#region src/hooks/_project.ts

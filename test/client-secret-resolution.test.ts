@@ -85,6 +85,24 @@ describe("client secret resolution", () => {
     expect(process.env.AGENTMEMORY_INJECT_CONTEXT).toBe("true");
   });
 
+  it.each([
+    [LOCAL, "Bearer custom-directory-secret"],
+    ["https://memory.example.com", undefined],
+  ])("hook auth respects a distinct custom data directory for %s", async (url, expected) => {
+    writeSecrets('AGENTMEMORY_SECRET="default-directory-secret"\n');
+    const customDir = join(home, "custom-data");
+    mkdirSync(customDir);
+    writeFileSync(join(customDir, ".env"), 'AGENTMEMORY_SECRET="custom-directory-secret"\nAGENTMEMORY_INJECT_CONTEXT=true\n');
+    vi.stubEnv("AGENTMEMORY_DATA_DIR", customDir);
+    vi.stubEnv("AGENTMEMORY_URL", url);
+    vi.stubEnv(KEY, undefined);
+    vi.stubEnv("AGENTMEMORY_INJECT_CONTEXT", undefined);
+    const { authHeaders } = await import("../src/hooks/_capture.js");
+    expect(authHeaders().Authorization).toBe(expected);
+    expect(process.env[KEY]).toBeUndefined();
+    expect(process.env.AGENTMEMORY_INJECT_CONTEXT).toBe("true");
+  });
+
   describe.each(resolvers)("%s", (_name, resolve) => {
     it("prefers the explicit secret", () => {
       writeSecrets('AGENTMEMORY_SECRET="from-env-file"\n');

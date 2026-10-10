@@ -40,10 +40,11 @@ function unquote(value: string): string {
   return hash === -1 ? value : value.slice(0, hash).trim();
 }
 
-export function readEnvFileSecret(): string {
+export function readEnvFileSecret(env: NodeJS.ProcessEnv = process.env): string {
   let content: unknown;
   try {
-    content = readFileSync(join(agentmemoryHomeDir(), ".env"), "utf-8");
+    const directory = env["AGENTMEMORY_DATA_DIR"]?.trim() || agentmemoryHomeDir();
+    content = readFileSync(join(directory, ".env"), "utf-8");
   } catch {
     return "";
   }
@@ -70,7 +71,7 @@ export function readStoredSecret(): string {
 }
 
 export function explicitSecret(env: NodeJS.ProcessEnv = process.env): string {
-  return usable(env[SECRET_KEY]) || readEnvFileSecret();
+  return usable(env[SECRET_KEY]) || readEnvFileSecret(env);
 }
 
 export function isLoopbackUrl(url: string): boolean {
@@ -91,7 +92,7 @@ export function resolveClientSecret(
   const fromEnv = usable(env[SECRET_KEY]);
   if (fromEnv) return fromEnv;
   if (!isLoopbackUrl(baseUrl)) return "";
-  return readEnvFileSecret() || readStoredSecret();
+  return readEnvFileSecret(env) || readStoredSecret();
 }
 
 export function ensureServerSecret(env: NodeJS.ProcessEnv = process.env): {
