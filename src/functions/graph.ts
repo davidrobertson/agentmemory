@@ -1,4 +1,4 @@
-import type { ISdk } from "iii-sdk";
+import type { IIIClient } from "iii-sdk";
 import type {
   GraphNode,
   GraphEdge,
@@ -14,6 +14,7 @@ import {
   graphShardKey,
 } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
+import { withKeyedLock } from "../state/keyed-mutex.js";
 import {
   GRAPH_INDEX_NODE_CEILING,
   GraphIndexReader,
@@ -31,29 +32,17 @@ import {
   buildGraphExtractionPrompt,
 } from "../prompts/graph-extraction.js";
 import { isGraphExtractionEnabled } from "../config.js";
-import { recordAudit } from "./audit.js";
+import { recordAudit, safeAudit } from "./audit.js";
 import { logger } from "../logger.js";
-import { withKeyedLock } from "../state/keyed-mutex.js";
+import { scrubRecord } from "./privacy.js";
 import {
   isGraphObservationProcessed,
   markGraphObservationsProcessed,
-  readGraphObservationResetAt,
 } from "../state/graph-observations.js";
 
-// #753: keep the response payload below the iii state channel ceiling.
-// 500 nodes + their incident edges hold well under the limit on the
-// reported 11k-node / 28k-edge corpus, and 5,000 is the upper bound a
-// caller can request explicitly. Tuned conservatively because edges
-// fan out faster than nodes.
 const DEFAULT_GRAPH_QUERY_LIMIT = 500;
 const MAX_GRAPH_QUERY_LIMIT = 5000;
 
-// #814: the precomputed snapshot covers the top-degree subgraph used by
-// the empty-body / nodeType-only branch — the path the viewer hits on
-// tab load. Sized to match the default query limit so the snapshot can
-// service a default-cap request without falling back to live
-// enumeration. Aggregate stats (nodesByType / edgesByType) are computed
-// fresh during rebuild and stored alongside.
 const SNAPSHOT_TOP_NODES = DEFAULT_GRAPH_QUERY_LIMIT;
 const SNAPSHOT_KEY = "current";
 
@@ -117,6 +106,27 @@ export async function readGraphSnapshot(
     });
     return null;
   }
+}
+
+async function readSnapshotStrict(kv: StateKV): Promise<GraphSnapshot | null> {
+  let raw: unknown;
+  try {
+    raw = await kv.get<unknown>(KV.graphSnapshot, SNAPSHOT_KEY);
+  } catch (err) {
+    logger.warn("Graph snapshot read failed, retrying once", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    raw = await kv.get<unknown>(KV.graphSnapshot, SNAPSHOT_KEY);
+  }
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "object" && (raw as { version?: unknown }).version === 1) {
+    return raw as GraphSnapshot;
+  }
+  throw new Error(
+    `Graph snapshot has unknown schema version: ${JSON.stringify(
+      (raw as { version?: unknown }).version,
+    )}`,
+  );
 }
 
 function compactSnapshotNode(node: GraphNode): GraphNode {
@@ -187,14 +197,20 @@ function paginateFromSnapshot(
   const filteredNodes = filterType
     ? snap.topNodes.filter((n) => n.type === filterType)
     : snap.topNodes;
-  const total = filterType
+  const totalRaw = filterType
     ? snap.stats.nodesByType[filterType] ?? 0
     : snap.stats.totalNodes;
+  const total = Math.max(totalRaw, filteredNodes.length);
   const pageNodes = filteredNodes.slice(offset, offset + limit);
   const pageIds = new Set(pageNodes.map((n) => n.id));
   const pageEdges = snap.topEdges.filter(
     (e) => pageIds.has(e.sourceNodeId) && pageIds.has(e.targetNodeId),
   );
+  const degrees: Record<string, number> = {};
+  for (const n of pageNodes) {
+    const d = snap.topDegrees?.[n.id];
+    if (typeof d === "number") degrees[n.id] = d;
+  }
   return {
     nodes: pageNodes,
     edges: pageEdges,
@@ -206,6 +222,7 @@ function paginateFromSnapshot(
     offset,
     fromSnapshot: true,
     provenanceOmitted: true,
+    degrees,
   };
 }
 
@@ -483,35 +500,46 @@ function snapshotPushEdgeIfBothInTop(
   }
 }
 
+export const MAX_GRAPH_SOURCE_OBSERVATIONS = 32;
+
+export function boundSources(existing: string[], incoming: string[]): string[] {
+  const merged = new Set(existing);
+  for (const id of incoming) {
+    merged.delete(id);
+    merged.add(id);
+  }
+  return [...merged].slice(-MAX_GRAPH_SOURCE_OBSERVATIONS);
+}
+
+export function boundRecordSources<R extends object>(record: R): R {
+  const sources = (record as { sourceObservationIds?: unknown } | null)?.sourceObservationIds;
+  if (!Array.isArray(sources) || sources.length <= MAX_GRAPH_SOURCE_OBSERVATIONS) return record;
+  return { ...record, sourceObservationIds: boundSources([], sources as string[]) };
+}
+
 function mergeNode(
   existing: GraphNode,
   incoming: GraphNode,
-  obsIds: string[],
   capturedAt: string,
 ): GraphNode {
   return {
     ...existing,
-    sourceObservationIds: [
-      ...new Set([
-        ...existing.sourceObservationIds,
-        ...incoming.sourceObservationIds,
-        ...obsIds,
-      ]),
-    ],
+    sourceObservationIds: boundSources(
+      existing.sourceObservationIds ?? [],
+      incoming.sourceObservationIds ?? [],
+    ),
     properties: { ...existing.properties, ...incoming.properties },
     updatedAt: capturedAt,
   };
 }
 
-function mergeEdge(
-  existing: GraphEdge,
-  obsIds: string[],
-): GraphEdge {
+function mergeEdge(existing: GraphEdge, incoming: GraphEdge): GraphEdge {
   return {
     ...existing,
-    sourceObservationIds: [
-      ...new Set([...existing.sourceObservationIds, ...obsIds]),
-    ],
+    sourceObservationIds: boundSources(
+      existing.sourceObservationIds ?? [],
+      incoming.sourceObservationIds ?? [],
+    ),
   };
 }
 
@@ -571,12 +599,6 @@ function paginate(
   };
 }
 
-// Parse all key="value" pairs from a tag's attribute string, in any
-// order. The previous parser hard-coded attribute order
-// (type before name on <entity>, type/source/target/weight on
-// <relationship>) and silently dropped nodes/edges when the upstream
-// LLM emitted attributes in a different order — Codex in particular
-// likes to lead with `name=` (#635).
 function parseAttrs(raw: string): Record<string, string> {
   const attrs: Record<string, string> = {};
   const attrRegex = /([A-Za-z_][\w:-]*)="([^"]*)"/g;
@@ -598,11 +620,6 @@ function parseGraphXml(
   const edges: GraphEdge[] = [];
   const now = new Date().toISOString();
 
-  // Two passes because <entity> can be self-closing or have a body
-  // (<property> children). The self-closing form needs `[^>]*[^/]` on
-  // the attr group so the trailing `/` isn't swallowed into the match
-  // (root cause of #494). The explicit-close form picks up the
-  // property block.
   const entitySelfClose = /<entity\b([^>]*?)\/>/g;
   const entityWithBody = /<entity\b([^>]*[^/])>([\s\S]*?)<\/entity>/g;
 
@@ -761,11 +778,13 @@ export function extractGraphHeuristics(
 // complete. Each name-index entry is a single small kv.get/set pair.
 async function persistGraphDeltaUnlocked(
   kv: StateKV,
-  nodes: GraphNode[],
-  edges: GraphEdge[],
+  rawNodes: GraphNode[],
+  rawEdges: GraphEdge[],
   obsIds: string[],
 ): Promise<{ newNodeCount: number; newEdgeCount: number }> {
-  const snap = (await readGraphSnapshot(kv, true)) ?? emptySnapshot();
+  const nodes = rawNodes.map((node) => scrubRecord(node));
+  const edges = rawEdges.map((edge) => boundRecordSources(scrubRecord(edge)));
+  const snap = (await readSnapshotStrict(kv)) ?? emptySnapshot();
   const now = new Date().toISOString();
   const capturedAt = snap.resetAt && now <= snap.resetAt
     ? new Date(Date.parse(snap.resetAt) + 1).toISOString()
@@ -867,24 +886,24 @@ async function persistGraphDeltaUnlocked(
       : null;
 
     if (existing) {
-      const merged = mergeNode(existing, node, obsIds, capturedAt);
+      const merged = mergeNode(existing, node, capturedAt);
       await kv.set(KV.graphNameIndex, indexKey, existing.id);
       await kv.set(KV.graphNodes, existing.id, merged);
-      await indexGraphNode(kv, merged, obsIds);
+      await indexGraphNode(kv, merged, node.sourceObservationIds);
       const topIdx = snap.topNodes.findIndex((n) => n.id === existing!.id);
       if (topIdx !== -1) {
         snap.topNodes[topIdx] = compactSnapshotNode(merged);
         snapMutated = true;
       }
     } else {
-      const persistedNode = snap.resetAt && node.createdAt <= snap.resetAt
+      const persistedNode = boundRecordSources(snap.resetAt && node.createdAt <= snap.resetAt
         ? { ...node, createdAt: capturedAt }
-        : node;
+        : node);
       await kv.set(KV.graphNameIndex, indexKey, node.id);
       await kv.set(KV.graphAdjacency, node.id, []);
       await kv.set(KV.graphNodeDegree, node.id, 0);
       await kv.set(KV.graphNodes, node.id, persistedNode);
-      await indexGraphNode(kv, persistedNode, obsIds);
+      await indexGraphNode(kv, persistedNode, node.sourceObservationIds);
     }
   }
 
@@ -902,7 +921,7 @@ async function persistGraphDeltaUnlocked(
     await kv.set(KV.graphEdgeKey, indexKey, edge.id);
 
     if (existing) {
-      const merged = mergeEdge(existing, obsIds);
+      const merged = mergeEdge(existing, edge);
       await kv.set(KV.graphEdges, existing.id, merged);
       await indexGraphEdge(kv, merged);
       persistedEdge = merged;
@@ -985,20 +1004,148 @@ async function persistGraphDeltaUnlocked(
   return { newNodeCount, newEdgeCount };
 }
 
+export interface GraphCompactResult {
+  nodesScanned: number;
+  nodesTrimmed: number;
+  edgesScanned: number;
+  edgesTrimmed: number;
+  historyScanned: number;
+  historyTrimmed: number;
+  idsRemoved: number;
+  snapshotTrimmed: boolean;
+  total?: number;
+  nextOffset: number | null;
+}
+
+export type GraphCompactScope = "nodes" | "edges" | "history" | "snapshot";
+
+export interface GraphCompactOptions {
+  scope?: GraphCompactScope;
+  offset?: number;
+  limit?: number;
+  dryRun?: boolean;
+}
+
+export const COMPACT_SCOPES: readonly GraphCompactScope[] = ["nodes", "edges", "history", "snapshot"];
+
+export async function compactGraphProvenance(
+  kv: StateKV,
+  opts: GraphCompactOptions = {},
+): Promise<GraphCompactResult> {
+  const { scope } = opts;
+  if (scope !== undefined && !COMPACT_SCOPES.includes(scope)) {
+    throw new Error(`unknown compact scope: ${String(scope)}`);
+  }
+  const offset = opts.offset ?? 0;
+  const dryRun = opts.dryRun === true;
+  const limit = opts.limit ?? Number.POSITIVE_INFINITY;
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new Error(`compact offset must be a non-negative integer: ${String(opts.offset)}`);
+  }
+  if (!(limit === Number.POSITIVE_INFINITY || (Number.isInteger(limit) && limit > 0))) {
+    throw new Error(`compact limit must be a positive integer: ${String(opts.limit)}`);
+  }
+
+  const result: GraphCompactResult = {
+    nodesScanned: 0,
+    nodesTrimmed: 0,
+    edgesScanned: 0,
+    edgesTrimmed: 0,
+    historyScanned: 0,
+    historyTrimmed: 0,
+    idsRemoved: 0,
+    snapshotTrimmed: false,
+    nextOffset: null,
+  };
+
+  const trimScope = async <R extends { sourceObservationIds: string[] }>(
+    listIds: () => Promise<unknown[]>,
+    recordScope: string,
+  ): Promise<{ scanned: number; trimmed: number }> => {
+    const allIds = [...new Set(await listIds())]
+      .filter((id): id is string => typeof id === "string")
+      .sort();
+    const end = Math.min(allIds.length, offset + limit);
+    result.total = allIds.length;
+    result.nextOffset = end < allIds.length ? end : null;
+    let scanned = 0;
+    let trimmed = 0;
+    for (const id of allIds.slice(offset, end)) {
+      await withKeyedLock("graph:persist", async () => {
+        const record = await kv.get<R>(recordScope, id);
+        if (!record) return;
+        scanned += 1;
+        const sources = record.sourceObservationIds ?? [];
+        if (sources.length <= MAX_GRAPH_SOURCE_OBSERVATIONS) return;
+        const bounded = boundSources([], sources);
+        result.idsRemoved += sources.length - bounded.length;
+        if (!dryRun) await kv.set(recordScope, id, { ...record, sourceObservationIds: bounded });
+        trimmed += 1;
+      });
+    }
+    return { scanned, trimmed };
+  };
+
+  const trimSnapshot = () =>
+    withKeyedLock("graph:persist", async () => {
+      const snap = await readGraphSnapshot(kv);
+      if (!snap) return;
+      const trimList = <R extends { sourceObservationIds: string[] }>(list: R[]) =>
+        list.map((r) => {
+          const sources = r.sourceObservationIds ?? [];
+          if (sources.length <= MAX_GRAPH_SOURCE_OBSERVATIONS) return r;
+          result.snapshotTrimmed = true;
+          return { ...r, sourceObservationIds: boundSources([], sources) };
+        });
+      const topNodes = trimList(snap.topNodes);
+      const topEdges = trimList(snap.topEdges);
+      if (result.snapshotTrimmed && !dryRun) {
+        await kv.set(KV.graphSnapshot, SNAPSHOT_KEY, { ...snap, topNodes, topEdges });
+      }
+    });
+
+  if (scope === undefined || scope === "nodes") {
+    const n = await trimScope<GraphNode>(() => kv.list<string>(KV.graphNameIndex), KV.graphNodes);
+    result.nodesScanned = n.scanned;
+    result.nodesTrimmed = n.trimmed;
+  }
+  if (scope === undefined || scope === "edges") {
+    const e = await trimScope<GraphEdge>(() => kv.list<string>(KV.graphEdgeKey), KV.graphEdges);
+    result.edgesScanned = e.scanned;
+    result.edgesTrimmed = e.trimmed;
+  }
+  if (scope === undefined || scope === "history") {
+    const h = await trimScope<GraphEdge>(
+      async () => (await kv.list<GraphEdge>(KV.graphEdgeHistory)).map((r) => r?.id),
+      KV.graphEdgeHistory,
+    );
+    result.historyScanned = h.scanned;
+    result.historyTrimmed = h.trimmed;
+  }
+  if (scope === undefined || scope === "snapshot") {
+    await trimSnapshot();
+  }
+  if (scope === undefined) {
+    delete result.total;
+    result.nextOffset = null;
+  }
+  return result;
+}
+
 export function persistGraphDelta(
   kv: StateKV,
   nodes: GraphNode[],
   edges: GraphEdge[],
-  obsIds: string[],
+  obsIds: string[] = [],
 ): Promise<{ newNodeCount: number; newEdgeCount: number }> {
-  // ponytail: process-local lock; use state-backed CAS for multiple writers.
-  return withKeyedLock("mem:graph:persist", () =>
+  // shortcut: process-local lock; use state-backed CAS for multiple writers.
+  return withKeyedLock("graph:persist", () =>
     persistGraphDeltaUnlocked(kv, nodes, edges, obsIds),
   );
 }
 
 export function registerGraphFunction(
-  sdk: ISdk,
+  sdk: IIIClient,
   kv: StateKV,
   provider: MemoryProvider,
 ): void {
@@ -1010,7 +1157,7 @@ export function registerGraphFunction(
 
       let observations = data.observations;
       try {
-        const resetAt = await readGraphObservationResetAt(kv);
+        const resetAt = (await readSnapshotStrict(kv))?.resetAt ?? null;
         const processed: boolean[] = [];
         for (let i = 0; i < observations.length; i += 100) {
           processed.push(
@@ -1117,12 +1264,6 @@ export function registerGraphFunction(
     },
   );
 
-  // #753: every branch now applies a default cap and reports the
-  // unbounded `total*` counts. Before this change, an unfiltered POST
-  // /graph/query body (`{}`) on a corpus with ~10k+ nodes serialized
-  // to a payload large enough that the iii state response channel
-  // rejected it with HTTP 500 "Invocation stopped", leaving the viewer
-  // graph tab silently blank.
   sdk.registerFunction("mem::graph-query",
     async (data: {
       startNodeId?: string;
@@ -1135,13 +1276,6 @@ export function registerGraphFunction(
       const maxDepth = Math.min(data.maxDepth || 3, 5);
       const { limit, offset } = resolvePagination(data.limit, data.offset);
 
-      // #814 v2: the empty-body / nodeType-only path NEVER enumerates.
-      // It reads the snapshot exclusively. The snapshot is updated
-      // inline by graph-extract, so for newly-built corpora it's
-      // always current. For legacy corpora missing a snapshot the
-      // operator must run mem::graph-snapshot-rebuild (safe under
-      // REBUILD_SAFE_NODE_CEILING) or mem::graph-reset to wipe and
-      // rebuild incrementally from new observations.
       const noWalk = !data.query && !data.startNodeId;
       if (noWalk) {
         const snap = await readGraphSnapshot(kv);
@@ -1159,7 +1293,7 @@ export function registerGraphFunction(
           offset,
           warning:
             "No graph snapshot available. Either no graph has been " +
-            "extracted yet, or you are on a legacy corpus from a pre-#814 " +
+            "extracted yet, or you are on a legacy corpus from an older " +
             "agentmemory build. Run POST /agentmemory/graph/snapshot-rebuild " +
             "(safe up to ~25K nodes) or POST /agentmemory/graph/reset to " +
             "wipe and let future extracts repopulate.",
@@ -1293,12 +1427,6 @@ export function registerGraphFunction(
     },
   );
 
-  // #814 v2: graph-stats reads the snapshot exclusively. The snapshot
-  // is maintained inline by mem::graph-extract, so for any corpus built
-  // on a post-#814 agentmemory the stats are always current without an
-  // enumeration. Legacy corpora without a snapshot get an empty
-  // envelope + a warning pointing at the snapshot-rebuild or graph-reset
-  // endpoints — never a 500.
   sdk.registerFunction("mem::graph-stats", async () => {
     const snap = await readGraphSnapshot(kv);
     if (snap) {
@@ -1328,18 +1456,10 @@ export function registerGraphFunction(
     };
   });
 
-  // #814 v2: explicit rebuild backfills the snapshot AND the name /
-  // edge-key / degree indexes from existing graphNodes/graphEdges
-  // scopes. This is the path operators run once after upgrading to a
-  // post-#814 build to bring legacy corpora online. It enumerates via
-  // kv.list — the same pair that breaks at 75K+ — so we refuse to
-  // run on corpora large enough that the response payload would
-  // block the worker heartbeat. Above the ceiling the only safe path
-  // is mem::graph-reset followed by incremental re-extraction.
   sdk.registerFunction(
     "mem::graph-snapshot-rebuild",
     async (data?: { force?: boolean }) =>
-      withKeyedLock("mem:graph:persist", async () => {
+      withKeyedLock("graph:persist", async () => {
         const started = Date.now();
         let rebuildResetAt: string | undefined;
         // #825: pre-flight refusal for legacy corpora. The old guard
@@ -1509,8 +1629,34 @@ export function registerGraphFunction(
   // read by any post-#816 code path. Cleanup is deferred to a future
   // chunked-vacuum job; #816's broken vacuum-via-list strategy is
   // what we are leaving behind here.
+  sdk.registerFunction("mem::graph-compact", async (data?: GraphCompactOptions) => {
+    const started = Date.now();
+    try {
+      const result = await compactGraphProvenance(kv, data ?? {});
+      const tookMs = Date.now() - started;
+      logger.info("Graph provenance compacted", { ...result, tookMs });
+      if (result.idsRemoved > 0) {
+        await safeAudit(kv, "graph_compact", "mem::graph-compact", [], {
+          scope: data?.scope ?? "all",
+          offset: data?.offset,
+          limit: data?.limit,
+          nodesTrimmed: result.nodesTrimmed,
+          edgesTrimmed: result.edgesTrimmed,
+          historyTrimmed: result.historyTrimmed,
+          idsRemoved: result.idsRemoved,
+          snapshotTrimmed: result.snapshotTrimmed,
+        });
+      }
+      return { success: true, ...result, tookMs };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error("Graph provenance compaction failed", { error: msg });
+      return { success: false, error: msg };
+    }
+  });
+
   sdk.registerFunction("mem::graph-reset", async () =>
-    withKeyedLock("mem:graph:persist", async () => {
+    withKeyedLock("graph:persist", async () => {
       const started = Date.now();
       const previous = await readGraphSnapshot(kv, true);
       const now = new Date().toISOString();

@@ -44,7 +44,7 @@ export function selectSessions(rows: readonly unknown[], limit?: number): Sessio
     .filter(isSession)
     .sort(
       (left, right) =>
-        right.startedAt.localeCompare(left.startedAt) || left.id.localeCompare(right.id),
+        right.startedAt.localeCompare(left.startedAt) || right.id.localeCompare(left.id),
     );
   if (limit === undefined) return sessions;
   return sessions.slice(0, Math.max(0, Math.min(MAX_SESSION_LIST_LIMIT, Math.floor(limit))));

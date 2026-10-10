@@ -365,9 +365,6 @@ export class GraphRetrieval {
   }
 }
 
-// Minimal binary min-heap. Pulled inline so graph-retrieval doesn't
-// take a new dependency for the perf-critical inner loop of #328.
-// Comparator returns negative when `a` should pop before `b`.
 class MinHeap<T> {
   private heap: T[] = [];
 

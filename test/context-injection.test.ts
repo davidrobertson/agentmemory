@@ -63,7 +63,7 @@ function runHook(
   });
 }
 
-describe("pre-tool-use hook — context injection gate (#143)", () => {
+describe("pre-tool-use hook — context injection gate", () => {
   it("writes nothing to stdout when AGENTMEMORY_INJECT_CONTEXT is unset (default)", async () => {
     const payload = JSON.stringify({
       session_id: "ses_test",
@@ -119,7 +119,7 @@ describe("pre-tool-use hook — context injection gate (#143)", () => {
   });
 });
 
-describe("session-start hook — context injection gate (#143)", () => {
+describe("session-start hook — context injection gate", () => {
   it("registers the session but writes nothing to stdout when AGENTMEMORY_INJECT_CONTEXT is unset", async () => {
     // Session registration POST will fail against the unreachable URL,
     // but the hook's try/catch must swallow that cleanly — Claude Code

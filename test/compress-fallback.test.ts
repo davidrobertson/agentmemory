@@ -134,12 +134,16 @@ describe("mem::compress degraded fallback", () => {
     expect(outcome.embed).toHaveBeenCalledTimes(1);
     expect(outcome.vectorIndex.size).toBe(1);
     expect(outcome.metrics.record.mock.calls[0]?.[2]).toBe(false);
-    expect(outcome.trigger).toHaveBeenCalledTimes(2);
+    expect(outcome.trigger).toHaveBeenCalledTimes(1);
     expect(outcome.trigger).toHaveBeenCalledWith(
       expect.objectContaining({
-        function_id: "stream::set",
+        function_id: "stream::send",
         payload: expect.objectContaining({
-          data: { type: "compressed", observation: outcome.stored },
+          data: {
+            type: "compressed",
+            sessionId: raw.sessionId,
+            observation: expect.objectContaining({ id: raw.id, confidence: 0.3 }),
+          },
         }),
       }),
     );
@@ -169,6 +173,6 @@ describe("mem::compress degraded fallback", () => {
     expect(outcome.embed).toHaveBeenCalledTimes(1);
     expect(outcome.vectorIndex.size).toBe(1);
     expect(outcome.metrics.record.mock.calls[0]?.[2]).toBe(false);
-    expect(outcome.trigger).toHaveBeenCalledTimes(2);
+    expect(outcome.trigger).toHaveBeenCalledTimes(1);
   });
 });

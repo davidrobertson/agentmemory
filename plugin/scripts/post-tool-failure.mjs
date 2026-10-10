@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { execSync } from "node:child_process";
+import { captureObservation, isDrainChild, runDrainChild, withEventId } from "./_capture.mjs";
 const ENV_FILE = join(process.env["AGENTMEMORY_DATA_DIR"]?.trim() || join(homedir(), ".agentmemory"), ".env");
 let envFileCache;
 function loadEnvFile() {
@@ -32,12 +33,53 @@ function loadEnvFile() {
 	envFileCache = vars;
 	return envFileCache;
 }
-function hydrateProcessEnvFromFile() {
-	for (const [key, value] of Object.entries(loadEnvFile())) if (process.env[key] === void 0) process.env[key] = value;
+function hydrateProcessEnvFromFile(excludedKeys = []) {
+	for (const [key, value] of Object.entries(loadEnvFile())) if (!excludedKeys.includes(key) && process.env[key] === void 0) process.env[key] = value;
 }
 //#endregion
 //#region src/hooks/_env.ts
-hydrateProcessEnvFromFile();
+hydrateProcessEnvFromFile(["AGENTMEMORY_SECRET"]);
+//#endregion
+//#region src/hooks/_capture-filter.ts
+const DEFAULT_DENY_PATTERNS = [
+	"memory_*",
+	"toolsearch",
+	"listmcpresources",
+	"fetchmcpresource"
+];
+function parseEnvList(raw) {
+	if (!raw?.trim()) return void 0;
+	return raw.split(/[,\s]+/).map((part) => part.trim()).filter(Boolean);
+}
+function bareToolName(toolName) {
+	const trimmed = toolName.trim();
+	if (/^mcp__/i.test(trimmed)) {
+		const parts = trimmed.split("__");
+		if (parts.length >= 3) return parts[parts.length - 1];
+	}
+	return trimmed;
+}
+function normalizePattern(pattern) {
+	return pattern.trim().toLowerCase();
+}
+function matchesPattern(toolName, pattern) {
+	const bare = bareToolName(toolName).toLowerCase();
+	const full = toolName.trim().toLowerCase();
+	const pat = normalizePattern(pattern);
+	if (!pat.includes("*")) return bare === pat || full === pat;
+	const escaped = pat.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+	const re = new RegExp(`^${escaped.replace(/\*/g, ".*")}$`);
+	return re.test(bare) || re.test(full);
+}
+function matchesAny(toolName, patterns) {
+	return patterns.some((pattern) => matchesPattern(toolName, pattern));
+}
+function shouldCaptureTool(toolName) {
+	if (typeof toolName !== "string" || !toolName.trim()) return true;
+	const allow = parseEnvList(process.env["AGENTMEMORY_CAPTURE_ALLOW"]);
+	if (allow) return matchesAny(toolName, allow);
+	return !matchesAny(toolName, [...DEFAULT_DENY_PATTERNS, ...parseEnvList(process.env["AGENTMEMORY_CAPTURE_DENY"]) ?? []]);
+}
 //#endregion
 //#region src/hooks/_project.ts
 function resolveProject(cwd) {
@@ -75,14 +117,10 @@ function isSdkChildContext(payload) {
 	if (!payload || typeof payload !== "object") return false;
 	return payload.entrypoint === "sdk-ts";
 }
-const REST_URL = process.env["AGENTMEMORY_URL"] || "http://localhost:3111";
-const SECRET = process.env["AGENTMEMORY_SECRET"] || "";
-function authHeaders() {
-	const h = { "Content-Type": "application/json" };
-	if (SECRET) h["Authorization"] = `Bearer ${SECRET}`;
-	return h;
-}
+const OBSERVE_TIMEOUT_MS = 3e3;
+const EXIT_CAP_MS = 3500;
 async function main() {
+	if (isDrainChild()) return runDrainChild();
 	let input = "";
 	for await (const chunk of process.stdin) input += chunk;
 	let data;
@@ -96,27 +134,23 @@ async function main() {
 	if (data.is_interrupt || data.isInterrupt) return;
 	const sessionId = data.session_id || data.sessionId || data.conversation_id || "unknown";
 	const toolName = data.tool_name ?? data.toolName;
+	if (!shouldCaptureTool(toolName)) return;
 	const toolInput = data.tool_input ?? data.toolArgs;
 	const error = data.error ?? data.errorMessage;
 	const cwd = hookCwd(data) || process.cwd();
-	fetch(`${REST_URL}/agentmemory/observe`, {
-		method: "POST",
-		headers: authHeaders(),
-		body: JSON.stringify({
-			hookType: "post_tool_failure",
-			sessionId,
-			project: resolveProject(cwd),
-			cwd,
-			timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-			data: {
-				tool_name: toolName,
-				tool_input: typeof toolInput === "string" ? toolInput.slice(0, 4e3) : JSON.stringify(toolInput ?? "").slice(0, 4e3),
-				error: typeof error === "string" ? error.slice(0, 4e3) : JSON.stringify(error ?? "").slice(0, 4e3)
-			}
-		}),
-		signal: AbortSignal.timeout(3e3)
-	}).catch(() => {});
-	setTimeout(() => process.exit(0), 500).unref();
+	captureObservation(withEventId({
+		hookType: "post_tool_failure",
+		sessionId,
+		project: resolveProject(cwd),
+		cwd,
+		timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+		data: {
+			tool_name: toolName,
+			tool_input: typeof toolInput === "string" ? toolInput.slice(0, 4e3) : JSON.stringify(toolInput ?? "").slice(0, 4e3),
+			error: typeof error === "string" ? error.slice(0, 4e3) : JSON.stringify(error ?? "").slice(0, 4e3)
+		}
+	}, data), OBSERVE_TIMEOUT_MS);
+	setTimeout(() => process.exit(0), EXIT_CAP_MS).unref();
 }
 main().catch(() => process.exit(0));
 //#endregion

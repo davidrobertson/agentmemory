@@ -12,8 +12,8 @@ vi.mock("../src/logger.js", () => ({
 function mockKV() {
   const store = new Map<string, Map<string, unknown>>();
   return {
-    get: async <T>(scope: string, key: string): Promise<T | null | undefined> =>
-      store.get(scope)?.get(key) as T | undefined,
+    get: async <T>(scope: string, key: string): Promise<T | null> =>
+      (store.get(scope)?.get(key) as T | undefined) ?? null,
     set: async <T>(scope: string, key: string, value: T): Promise<T> => {
       let entries = store.get(scope);
       if (!entries) {

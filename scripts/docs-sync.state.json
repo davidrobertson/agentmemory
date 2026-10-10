@@ -1,0 +1,38 @@
+{
+  "version": "0.9.30-codex.1",
+  "facts": {
+    "mcpTools": [
+      "54"
+    ],
+    "coreTools": [
+      "8"
+    ],
+    "fallbackTools": [
+      "7"
+    ],
+    "restEndpoints": [
+      "138"
+    ],
+    "skills": [
+      "17"
+    ],
+    "hooks": [
+      "12"
+    ],
+    "tests": [
+      "2600+"
+    ],
+    "functions": [
+      "312"
+    ],
+    "sourceFiles": [
+      "225"
+    ],
+    "loc": [
+      "54000"
+    ],
+    "kvScopes": [
+      "66"
+    ]
+  }
+}

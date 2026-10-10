@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import "./_env.js";
+import { resolveClientSecret } from "../secret-store.js";
+import { preCompactBudget } from "./_capture-filter.js";
 import { resolveProject, hookCwd } from "./_project.js";
 
 function isSdkChildContext(payload: unknown): boolean {
@@ -9,7 +11,7 @@ function isSdkChildContext(payload: unknown): boolean {
 }
 
 const REST_URL = process.env["AGENTMEMORY_URL"] || "http://localhost:3111";
-const SECRET = process.env["AGENTMEMORY_SECRET"] || "";
+const SECRET = resolveClientSecret(REST_URL);
 const INJECT_CONTEXT = process.env["AGENTMEMORY_INJECT_CONTEXT"] === "true";
 
 function authHeaders(): Record<string, string> {
@@ -52,11 +54,14 @@ async function main() {
     }
   }
 
+  const budget = preCompactBudget();
+  if (budget === 0) return;
+
   try {
     const res = await fetch(`${REST_URL}/agentmemory/context`, {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify({ sessionId, project, budget: 1500 }),
+      body: JSON.stringify({ sessionId, project, budget }),
       signal: AbortSignal.timeout(5000),
     });
 

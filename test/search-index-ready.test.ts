@@ -33,7 +33,7 @@ describe("search index readiness", () => {
       },
     };
     const { KV } = await import("../src/state/schema.js");
-    const { ensureSearchIndexReady, getSearchIndex, registerSearchFunction } = await import(
+    const { rebuildKeywordIndex, ensureSearchIndexReady, getSearchIndex, registerSearchFunction } = await import(
       "../src/functions/search.js"
     );
     const handlers = new Map<
@@ -50,7 +50,7 @@ describe("search index readiness", () => {
     const search = vi.spyOn(getSearchIndex(), "search");
 
     // When: startup, direct search, and the smart-search closure overlap.
-    const startup = ensureSearchIndexReady(kv as never);
+    const startup = rebuildKeywordIndex(kv as never);
     await firstListStarted.promise;
     const handler = handlers.get("mem::search");
     if (!handler) throw new Error("mem::search was not registered");

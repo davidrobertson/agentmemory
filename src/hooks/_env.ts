@@ -1,3 +1,3 @@
 import { hydrateProcessEnvFromFile } from "../env-file.js";
 
-hydrateProcessEnvFromFile();
+hydrateProcessEnvFromFile(["AGENTMEMORY_SECRET"]);

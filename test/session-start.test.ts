@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { registerApiTriggers } from "../src/triggers/api.js";
+import { KV } from "../src/state/schema.js";
 
 type Handler = (request: { readonly body?: unknown }) => Promise<unknown>;
 
@@ -12,7 +13,7 @@ function setup() {
     registerTrigger: () => {},
     trigger,
   };
-  const kv = { set };
+  const kv = { set, get: vi.fn(async () => null), list: vi.fn(async () => []) };
   registerApiTriggers(sdk as never, kv as never);
   const sessionStart = functions.get("api::session::start");
   if (!sessionStart) throw new Error("api::session::start was not registered");
@@ -41,7 +42,7 @@ describe("api::session::start context selection", () => {
     expect(response.status_code).toBe(200);
     expect(response.body.session.id).toBe("ses_capture");
     expect(response.body.context).toBeUndefined();
-    expect(set).toHaveBeenCalledOnce();
+    expect(set.mock.calls.filter(([scope]) => scope === KV.sessions)).toHaveLength(1);
     expect(trigger).not.toHaveBeenCalled();
   });
 

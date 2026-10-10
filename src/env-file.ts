@@ -41,9 +41,9 @@ export function __resetEnvFileCache(): void {
   envFileCache = undefined;
 }
 
-export function hydrateProcessEnvFromFile(): void {
+export function hydrateProcessEnvFromFile(excludedKeys: readonly string[] = []): void {
   for (const [key, value] of Object.entries(loadEnvFile())) {
-    if (process.env[key] === undefined) process.env[key] = value;
+    if (!excludedKeys.includes(key) && process.env[key] === undefined) process.env[key] = value;
   }
 }
 

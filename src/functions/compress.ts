@@ -1,4 +1,4 @@
-import { TriggerAction, type ISdk } from "iii-sdk";
+import { TriggerAction, type IIIClient } from "iii-sdk";
 import { readFileSync } from "node:fs";
 import { isManagedImagePath } from "../utils/image-store.js";
 import type {
@@ -15,7 +15,7 @@ import {
 } from "../prompts/compression.js";
 import { VISION_DESCRIPTION_PROMPT } from "../prompts/vision.js";
 import { getXmlTag, getXmlChildren } from "../prompts/xml.js";
-import { getSearchIndex, vectorIndexAddGuarded } from "./search.js";
+import { getSearchIndex, scheduleIndexSave, vectorIndexAddGuarded } from "./search.js";
 import { CompressOutputSchema } from "../eval/schemas.js";
 import { validateOutput } from "../eval/validator.js";
 import { scoreCompression } from "../eval/quality.js";
@@ -23,6 +23,10 @@ import { compressWithRetry } from "../eval/self-correct.js";
 import type { MetricsStore } from "../eval/metrics-store.js";
 import { logger } from "../logger.js";
 import { buildSyntheticCompression } from "./compress-synthetic.js";
+import { createObservationSource, withoutObservationSource } from "./observation-source.js";
+import { budgetLiveObservationSource } from "./observation-source-budget.js";
+import { withKeyedLock } from "../state/keyed-mutex.js";
+import { scrubRecord, stripPrivateData } from "./privacy.js";
 
 const VALID_TYPES = new Set<string>([
   "file_read",
@@ -67,7 +71,7 @@ function parseCompressionXml(
 
 // allow: SIZE_OK — one linear compression pipeline owns exact-once persistence and indexing.
 export function registerCompressFunction(
-  sdk: ISdk,
+  sdk: IIIClient,
   kv: StateKV,
   provider: MemoryProvider,
   metricsStore?: MetricsStore,
@@ -79,6 +83,9 @@ export function registerCompressFunction(
       raw: RawObservation;
     }) => {
       const startMs = Date.now();
+      if (!data?.raw || typeof data.raw.hookType !== "string" || !data.raw.hookType) {
+        return { success: false, error: "invalid_raw_observation" };
+      }
 
       let imageDescription: string | undefined;
       const hasImage = data.raw.modality === "image" || data.raw.modality === "mixed";
@@ -155,13 +162,15 @@ export function registerCompressFunction(
               id: data.observationId,
               sessionId: data.sessionId,
               timestamp: data.raw.timestamp,
-              ...parsed,
+              ...scrubRecord(parsed),
+              source: createObservationSource(data.raw),
               confidence: qualityScore / 100,
               ...(hasImage ? { modality: data.raw.modality } : {}),
-              ...(imageDescription ? { imageDescription } : {}),
+              ...(imageDescription ? { imageDescription: stripPrivateData(imageDescription) } : {}),
               ...(data.raw.imageData ? { imageRef: data.raw.imageData } : {}),
               ...(data.raw.agentId ? { agentId: data.raw.agentId } : {}),
               ...(data.raw.origin ? { origin: data.raw.origin } : {}),
+              ...(data.raw.captureKey ? { captureKey: data.raw.captureKey } : {}),
             };
           } else {
             failure = "parse_failed";
@@ -178,14 +187,17 @@ export function registerCompressFunction(
           });
         }
 
-        await kv.set(
-          KV.observations(data.sessionId),
-          data.observationId,
-          compressed,
-        );
+        const candidate = scrubRecord(compressed);
+        compressed = await withKeyedLock(`obs:${data.sessionId}`, async () => {
+          const existing = await kv.list<CompressedObservation>(KV.observations(data.sessionId));
+          const bounded = budgetLiveObservationSource(candidate, existing);
+          await kv.set(KV.observations(data.sessionId), data.observationId, bounded);
+          return bounded;
+        });
 
         try {
           getSearchIndex().add(compressed);
+          scheduleIndexSave();
         } catch (err) {
           logger.warn("Failed to index compressed observation into BM25", {
             obsId: compressed.id,
@@ -207,15 +219,6 @@ export function registerCompressFunction(
 
         const streamResults = await Promise.allSettled([
           sdk.trigger({
-            function_id: "stream::set",
-            payload: {
-              stream_name: STREAM.name,
-              group_id: STREAM.group(data.sessionId),
-              item_id: data.observationId,
-              data: { type: "compressed", observation: compressed },
-            },
-          }),
-          sdk.trigger({
             function_id: "stream::send",
             payload: {
               stream_name: STREAM.name,
@@ -224,7 +227,7 @@ export function registerCompressFunction(
               type: "compressed_observation",
               data: {
                 type: "compressed",
-                observation: compressed,
+                observation: withoutObservationSource(compressed),
                 sessionId: data.sessionId,
               },
             },
@@ -264,7 +267,7 @@ export function registerCompressFunction(
           retried,
         });
 
-        return { success: true, compressed, qualityScore };
+        return { success: true, compressed: withoutObservationSource(compressed), qualityScore };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const latencyMs = Date.now() - startMs;
