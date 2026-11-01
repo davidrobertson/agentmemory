@@ -70,7 +70,7 @@ async function runChunked<T>(
 const EXPORT_OVERSIZE_HINT =
   "narrow the range with ?maxSessions / ?offset, or export fewer collections; the non-session collections (memories, graph, semantic, actions, lessons, ...) are not yet paginated";
 
-const EXPORT_COLLECTIONS: ReadonlyArray<readonly [keyof ExportData, string]> = [
+const EXPORT_COLLECTIONS = [
   ["graphNodes", KV.graphNodes],
   ["graphEdges", KV.graphEdges],
   ["semanticMemories", KV.semantic],
@@ -87,7 +87,7 @@ const EXPORT_COLLECTIONS: ReadonlyArray<readonly [keyof ExportData, string]> = [
   ["signals", KV.signals],
   ["checkpoints", KV.checkpoints],
   ["accessLogs", KV.accessLog],
-];
+] satisfies ReadonlyArray<readonly [keyof ExportData, string]>;
 
 export class ExportBudget {
   bytes = 0;
@@ -286,8 +286,15 @@ export function registerExportImportFunction(sdk: IIIClient, kv: StateKV): void 
         };
       }
 
+      const invalidRowIndex = (rows: readonly unknown[], key: string) =>
+        rows.findIndex((row) => {
+          const id: unknown = row !== null && typeof row === "object" && !Array.isArray(row)
+            ? Reflect.get(row, key)
+            : undefined;
+          return typeof id !== "string" || id.length === 0;
+        });
       let totalObservations = 0;
-      for (const [, obs] of Object.entries(importData.observations)) {
+      for (const [sessionId, obs] of Object.entries(importData.observations)) {
         if (!Array.isArray(obs)) {
           return { success: false, error: "observation values must be arrays" };
         }
@@ -297,12 +304,37 @@ export function registerExportImportFunction(sdk: IIIClient, kv: StateKV): void 
             error: `Too many observations per session (max ${MAX_OBS_PER_SESSION})`,
           };
         }
+        const index = invalidRowIndex(obs, "id");
+        if (index >= 0) {
+          return { success: false, error: `observations.${sessionId}[${index}] must be an object with a string id` };
+        }
         totalObservations += obs.length;
       }
       if (totalObservations > MAX_TOTAL_OBSERVATIONS) {
         return {
           success: false,
           error: `Too many total observations (max ${MAX_TOTAL_OBSERVATIONS})`,
+        };
+      }
+
+      const rowKeys: Partial<Record<keyof ExportData, string>> = {
+        summaries: "sessionId", profiles: "project", accessLogs: "memoryId",
+      };
+      for (const section of ["sessions", "memories", "summaries", "profiles", ...EXPORT_COLLECTIONS.map(([field]) => field)] as const) {
+        const rows = importData[section];
+        if (rows !== undefined && !Array.isArray(rows)) {
+          return { success: false, error: `${section} must be an array` };
+        }
+        const key = rowKeys[section] ?? "id";
+        const index = invalidRowIndex(rows ?? [], key);
+        if (index >= 0) {
+          return { success: false, error: `${section}[${index}] must be an object with a string ${key}` };
+        }
+      }
+      if ((importData.accessLogs?.length ?? 0) > MAX_ACCESS_LOGS) {
+        return {
+          success: false,
+          error: `Too many access logs (max ${MAX_ACCESS_LOGS})`,
         };
       }
 
@@ -673,15 +705,6 @@ export function registerExportImportFunction(sdk: IIIClient, kv: StateKV): void 
         });
       }
       if (importData.accessLogs) {
-        if (!Array.isArray(importData.accessLogs)) {
-          return { success: false, error: "accessLogs must be an array" };
-        }
-        if (importData.accessLogs.length > MAX_ACCESS_LOGS) {
-          return {
-            success: false,
-            error: `Too many access logs (max ${MAX_ACCESS_LOGS})`,
-          };
-        }
         const memoryIds = new Set<string>(
           importData.memories.map((m) => m.id),
         );

@@ -7,6 +7,7 @@ vi.mock("../src/logger.js", () => ({
 import { registerExportImportFunction } from "../src/functions/export-import.js";
 import { VERSION } from "../src/version.js";
 import { getSearchIndex } from "../src/functions/search.js";
+import { KV } from "../src/state/schema.js";
 import type {
   Session,
   CompressedObservation,
@@ -18,6 +19,7 @@ import type {
 function mockKV() {
   const store = new Map<string, Map<string, unknown>>();
   return {
+    snapshot: () => structuredClone(store),
     get: async <T>(scope: string, key: string): Promise<T | null> => {
       return (store.get(scope)?.get(key) as T) ?? null;
     },
@@ -102,6 +104,74 @@ const testSummary: SessionSummary = {
   concepts: ["auth"],
   observationCount: 1,
 };
+
+const optionalImportSections = [
+  ["profiles", KV.profiles, "project"],
+  ["graphNodes", KV.graphNodes, "id"],
+  ["graphEdges", KV.graphEdges, "id"],
+  ["semanticMemories", KV.semantic, "id"],
+  ["proceduralMemories", KV.procedural, "id"],
+  ["actions", KV.actions, "id"],
+  ["actionEdges", KV.actionEdges, "id"],
+  ["routines", KV.routines, "id"],
+  ["signals", KV.signals, "id"],
+  ["checkpoints", KV.checkpoints, "id"],
+  ["sentinels", KV.sentinels, "id"],
+  ["sketches", KV.sketches, "id"],
+  ["crystals", KV.crystals, "id"],
+  ["facets", KV.facets, "id"],
+  ["lessons", KV.lessons, "id"],
+  ["insights", KV.insights, "id"],
+  ["accessLogs", KV.accessLog, "memoryId"],
+] as const;
+
+const importRowKeys = [
+  ["sessions", "id"],
+  ["memories", "id"],
+  ["summaries", "sessionId"],
+  ...optionalImportSections.map(([section, , key]) => [section, key]),
+  ["observations", "id"],
+] as const;
+
+const malformedSections = [
+  ...optionalImportSections.map(([section]) => ({ section, shape: "null", value: null })),
+  { section: "lessons", shape: "an object", value: {} },
+  { section: "profiles", shape: "a string", value: "oops" },
+  { section: "accessLogs", shape: "a string", value: "oops" },
+  { section: "graphNodes", shape: "false", value: false },
+];
+
+const malformedRows = [
+  ...importRowKeys.map(([section, key]) => ({ section, key, shape: "without its key", value: {} })),
+  ...[
+    ["lessons", "id"],
+    ["summaries", "sessionId"],
+    ["profiles", "project"],
+    ["accessLogs", "memoryId"],
+  ].flatMap(([section, key]) => [
+    { section, key, shape: "null", value: null },
+    { section, key, shape: "with an empty key", value: { [key]: "" } },
+    { section, key, shape: "with a numeric key", value: { [key]: 1 } },
+  ]),
+  { section: "facets", key: "id", shape: "null", value: null },
+  { section: "memories", key: "id", shape: "null", value: null },
+];
+
+const sectionPreflightCases = [
+  ...malformedSections.map((testCase) => ({ ...testCase, strategy: "replace" })),
+  ...["merge", "skip"].flatMap((strategy) => [
+    { section: "lessons", shape: "null", value: null, strategy },
+    { section: "accessLogs", shape: "a string", value: "oops", strategy },
+  ]),
+];
+
+const rowPreflightCases = [
+  ...malformedRows.map((testCase) => ({ ...testCase, strategy: "replace" })),
+  ...["merge", "skip"].flatMap((strategy) => [
+    { section: "profiles", key: "project", shape: "without its key", value: {}, strategy },
+    { section: "observations", key: "id", shape: "null", value: null, strategy },
+  ]),
+];
 
 describe("Export/Import Functions", () => {
   let sdk: ReturnType<typeof mockSdk>;
@@ -258,6 +328,70 @@ describe("Export/Import Functions", () => {
 
     const oldSession = await kv.get("mem:sessions", "ses_1");
     expect(oldSession).toBeNull();
+  });
+
+  describe("import preflight", () => {
+    let incoming: ExportData;
+
+    beforeEach(async () => {
+      for (const [section, scope, key] of optionalImportSections) {
+        await kv.set(scope, `existing-${section}`, { [key]: `existing-${section}` });
+      }
+      incoming = {
+        version: VERSION,
+        exportedAt: "2026-11-01T00:00:00Z",
+        sessions: [{ ...testSession, id: "ses_incoming" }],
+        observations: {
+          ses_incoming: [{ ...testObs, id: "obs_incoming", sessionId: "ses_incoming" }],
+        },
+        memories: [{ ...testMemory, id: "mem_incoming" }],
+        summaries: [{ ...testSummary, sessionId: "ses_incoming" }],
+      };
+    });
+
+    it.each(sectionPreflightCases)("$strategy rejects $section as $shape before any writes", async ({ section, value, strategy }) => {
+      const before = kv.snapshot();
+      const result = await sdk.trigger("mem::import", {
+        exportData: { ...incoming, [section]: value },
+        strategy,
+      }).catch((error: unknown) => error);
+
+      expect.soft(result).toMatchObject({ success: false, error: `${section} must be an array` });
+      expect(kv.snapshot()).toEqual(before);
+    });
+
+    it.each(rowPreflightCases)("$strategy rejects a $section row $shape before any writes", async ({ section, key, value, strategy }) => {
+      const before = kv.snapshot();
+      const rows = [{ id: "valid", sessionId: "valid", project: "valid", memoryId: "valid" }, value];
+      const result = await sdk.trigger("mem::import", {
+        exportData: {
+          ...incoming,
+          [section]: section === "observations" ? { ses_incoming: rows } : rows,
+        },
+        strategy,
+      }).catch((error: unknown) => error);
+
+      const location = section === "observations" ? "observations.ses_incoming" : section;
+      expect.soft(result).toMatchObject({
+        success: false,
+        error: `${location}[1] must be an object with a string ${key}`,
+      });
+      expect(kv.snapshot()).toEqual(before);
+    });
+
+    it.each(["replace", "merge", "skip"])("%s rejects access logs above the cap before any writes", async (strategy) => {
+      const before = kv.snapshot();
+      const result = await sdk.trigger("mem::import", {
+        exportData: {
+          ...incoming,
+          accessLogs: Array.from({ length: 50_001 }, () => ({ memoryId: "mem_incoming" })),
+        },
+        strategy,
+      });
+
+      expect.soft(result).toMatchObject({ success: false, error: "Too many access logs (max 50000)" });
+      expect(kv.snapshot()).toEqual(before);
+    });
   });
 
   it("export then import round-trip preserves data", async () => {
